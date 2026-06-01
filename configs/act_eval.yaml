@@ -1,0 +1,31 @@
+# ACT 零样本评估 — 未见环境 D
+# 加载训练好的 baseline 和 joint 检查点，在环境 D 上评估泛化能力。
+
+experiment:
+  name: "act_zero_shot_eval"
+  output_dir: "./outputs"
+
+model:
+  baseline_checkpoint: "./outputs/checkpoints/act_baseline/best_model.pt"
+  joint_checkpoint:    "./outputs/checkpoints/act_joint/best_model.pt"
+
+eval:
+  env_name: "D"                 # 未见环境
+  num_episodes: 100             # 每模型评估轮数
+  max_steps: 360                # 每轮最大步数
+  chunk_size: 100               # ACT 动作块长度
+  device: "cuda"
+  seed: 42
+
+# 架构参数必须与训练配置一致
+policy:
+  camera_names: ["rgb_static", "rgb_gripper"]
+  hidden_dim: 512
+  n_encoder_layers: 4
+  n_decoder_layers: 7
+  nheads: 8
+  dim_feedforward: 2048
+  dropout: 0.1
+  chunk_size: 100
+  action_dim: 7
+  state_dim: 15

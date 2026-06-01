@@ -1,0 +1,40 @@
+# LeRobot ACT + CALVIN Cross-Environment Generalization
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Conda / Virtualenv
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Outputs (checkpoints are large, exclude from git)
+outputs/checkpoints/
+outputs/logs/
+
+# Data (downloaded separately)
+data/calvin_raw/
+data/calvin_processed/
+
+# Environment secrets
+.env
+wandb/
+swanlab/
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db

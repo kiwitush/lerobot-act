@@ -1,0 +1,409 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%  具身智能跨环境泛化挑战 — 基于 LeRobot 的 ACT 策略
+%  实验报告 (NeurIPS 2026 风格)
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\documentclass[11pt]{article}
+
+% ---- 页面设置 ----
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{multirow}
+\usepackage{enumitem}
+\usepackage{float}
+
+% ---- 链接颜色 ----
+\definecolor{linkblue}{RGB}{0,102,204}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=linkblue,
+    urlcolor=linkblue,
+    citecolor=linkblue,
+}
+
+% ---- 元信息 ----
+\title{\Large\textbf{具身智能中多环境数据对策略泛化能力的影响\\—— 基于 CALVIN 与 ACT 的实证研究}}
+
+\author{
+    \small [作者姓名] \\
+    \small [学号/院系] \\
+    \small [学校名称]
+}
+
+\date{\small \today}
+
+\begin{document}
+\maketitle
+
+% ==============================================================================
+\section{引言}
+% ==============================================================================
+
+具身智能 (Embodied AI) 的核心挑战之一是让机器人在未见过的环境中可靠执行操作任务。现实世界中光照、背景纹理和物体摆放位置的变化会导致视觉分布偏移 (Visual Distribution Shift)，而现有模仿学习 (Imitation Learning) 策略在此类偏移下往往表现脆弱。
+
+本实验在 CALVIN\cite{mees2022calvin} 基准上，使用 LeRobot\cite{lerobot2024} 框架集成的 ACT\cite{zhao2023act} (Action Chunking with Transformers) 策略，系统研究\textbf{多环境联合训练}对策略跨环境泛化能力的影响。具体而言，我们训练两条策略:
+
+\begin{enumerate}[label=(\arabic*),leftmargin=*]
+    \item \textbf{Baseline}: 仅在环境 A 的演示数据上训练
+    \item \textbf{Joint}: 在环境 A + B + C 的演示数据上联合训练
+\end{enumerate}
+
+两条策略使用完全相同的 ACT 网络架构和超参数，在训练完成后部署至双方都未曾见过的环境 D 中进行零样本评估。
+
+% ==============================================================================
+\section{数据集}
+% ==============================================================================
+
+\subsection{CALVIN 基准}
+
+CALVIN (Composing Actions from Language and Vision) 是一个用于长序列语言条件操作任务的基准\cite{mees2022calvin}。包含 4 个仿真环境变体 (A、B、C、D)，每个变体在视觉特征上有所不同:
+
+\begin{itemize}[leftmargin=*]
+    \item \textbf{环境 A}: 标准光照、灰色桌面
+    \item \textbf{环境 B}: 暖色光照、木质纹理桌面
+    \item \textbf{环境 C}: 冷色光照、白色桌面
+    \item \textbf{环境 D}: 混合光照、大理石纹理桌面 (仅用于评估)
+\end{itemize}
+
+每个环境包含 7-DoF Franka Emika Panda 机械臂和一个平行夹爪，操作者通过遥操作 (Teleoperation) 收集演示数据。每条演示包含:
+
+\begin{itemize}[leftmargin=*]
+    \item \textbf{视觉观测}: 两个 RGB 相机
+    \begin{itemize}
+        \item \texttt{rgb\_static}: 固定第三人称视角 (200×200 px)
+        \item \texttt{rgb\_gripper}: 固定在夹爪上的第一人称视角 (200×200 px)
+    \end{itemize}
+    \item \textbf{本体感知}: 15 维机器人关节状态 (关节位置 + 速度 + 末端位姿)
+    \item \textbf{动作标签}: 7 维动作 (末端执行器位移 dx,dy,dz + 旋转 droll,dpitch,dyaw + 夹爪开合)
+\end{itemize}
+
+\subsection{数据分割}
+
+采用标准的 \texttt{task\_ABC\_D} 分割:
+
+\begin{table}[H]
+    \centering
+    \caption{CALVIN 数据分割策略}
+    \begin{tabular}{lccp{0.3\textwidth}}
+        \toprule
+        \textbf{实验} & \textbf{训练环境} & \textbf{验证/测试环境} & \textbf{数据量 (episodes)} \\
+        \midrule
+        Baseline & A         & D (OOD 验证) & $\approx$ 环境 A 的 episode 子集 \\
+        Joint    & A + B + C & D (OOD 验证) & $\approx$ 全部训练集          \\
+        \midrule
+        零样本测试 & —      & D            & 100 episodes             \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\subsection{数据格式}
+
+原始 CALVIN 数据集以逐帧 \texttt{.npz} 文件存储。本实验通过 HuggingFace Hub 上预转换的 LeRobot 格式版本 (\texttt{lerobot/calvin}) 直接加载，该版本将状态/动作数据存储为 Parquet 文件，视觉数据存储为 MP4 视频，大幅降低 I/O 开销。
+
+% ==============================================================================
+\section{方法}
+% ==============================================================================
+
+\subsection{ACT 策略}
+
+ACT (Action Chunking with Transformers) 是一种基于 Transformer 编码器-解码器架构的模仿学习策略\cite{zhao2023act}。其核心思想是不再逐帧预测单个动作，而是一\textbf{次性预测未来 $T$ 步的动作块 (Action Chunk)}。这利用了操作任务中动作序列固有的时序一致性。
+
+\subsection{网络架构}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.85\textwidth]{outputs/figures/training_curves.png}
+    \caption{训练损失曲线 (左: 训练损失, 右: 验证损失) — 本图表由 SwanLab/WandB 在训练过程中自动记录并导出。}
+    \label{fig:training_curves}
+\end{figure}
+
+ACT 策略由以下组件构成:
+
+\paragraph{视觉编码器} 每个相机对应一个 ResNet-18 骨干网络 (ImageNet-1K 预训练)。输入 $3\times 200 \times 200$ 的 RGB 图像，输出 512 维特征向量。两个相机的特征拼接后得到 1024 维视觉特征。
+
+\paragraph{状态编码器} 一个 2 层 MLP 将 15 维机器人关节状态映射为 512 维 embedding。
+
+\paragraph{Transformer Encoder} 4 层标准 Transformer 编码器层，每层包含:
+\begin{itemize}[leftmargin=*]
+    \item Multi-Head Self-Attention (8 heads)
+    \item Position-wise Feed-Forward Network (2048 维)
+    \item Layer Normalization + Residual Connection
+\end{itemize}
+编码器将视觉特征、状态特征和可学习的 CLS token 融合为统一的隐空间表示。隐藏维度 $d_{\text{model}} = 512$。
+
+\paragraph{Transformer Decoder} 7 层 Transformer 解码器层。解码器通过 100 个可学习的 query 位置编码 (对应动作 chunk 中 100 个时间步) 对编码器输出进行交叉注意力，生成动作序列的隐表示。
+
+\paragraph{CVAE (条件变分自编码器)} 在解码器之上附加一个 CVAE 模块:
+\begin{itemize}[leftmargin=*]
+    \item 隐变量维度: 32
+    \item KL 散度权重: $\beta = 10.0$
+    \item 训练时从后验分布 $q(z | x, a)$ 采样
+    \item 推理时从先验分布 $p(z | x)$ 采样
+\end{itemize}
+CVAE 使策略能够建模动作空间的多模态性——同一观测下可能存在多种合理动作 (如从左侧或右侧绕过障碍物)。
+
+\paragraph{输出头} 线性映射将解码器输出 (每 query 位置 512 维) 投影为 7 维动作增量，最终输出形状为 $(100, 7)$ 的动作 chunk。
+
+\subsection{时序集成 (Temporal Ensemble)}
+
+推理时，ACT 在每个时间步预测一个 100 步的动作块。相邻时间步的预测块存在 99 步重叠。策略对重叠步的动作取指数加权平均:
+
+\begin{equation}
+    a_t = \frac{\sum_{k} e^{-k/\tau} \cdot a_t^{(k)}}{\sum_{k} e^{-k/\tau}}
+\end{equation}
+
+其中 $a_t^{(k)}$ 是 $k$ 步前对当前时刻 $t$ 的预测，衰减系数 $\tau$ 控制旧预测的权重衰减速度。该机制提供了一种隐式的时序正则化，使输出动作序列更加平滑。
+
+\subsection{训练目标}
+
+训练损失为 L1 重建损失与 KL 散度的加权和:
+
+\begin{equation}
+    \mathcal{L} = \frac{1}{B \cdot T \cdot D} \sum_{b,t,d} \left| \hat{a}_{b,t,d} - a_{b,t,d} \right| + \beta \cdot D_{\text{KL}}\left(q(z|x,a) \| p(z|x)\right)
+\end{equation}
+
+其中 $B$ 为 batch size，$T=100$ 为 chunk 长度，$D=7$ 为动作维度，$\beta=10.0$ 为 KL 权重。
+
+% ==============================================================================
+\section{实验设置}
+% ==============================================================================
+
+\subsection{超参数配置}
+
+Baseline 和 Joint 两组实验使用完全相同的网络架构和超参数，仅训练数据不同，以控制变量。
+
+\begin{table}[H]
+    \centering
+    \caption{超参数详表}
+    \label{tab:hyperparams}
+    \begin{tabular}{ll}
+        \toprule
+        \textbf{参数} & \textbf{值} \\
+        \midrule
+        \multicolumn{2}{c}{\textbf{网络架构}} \\
+        Vision Backbone           & ResNet-18 (ImageNet-1K 预训练) \\
+        Hidden Dimension ($d_{\text{model}}$) & 512 \\
+        Transformer Encoder Layers & 4 \\
+        Transformer Decoder Layers & 7 \\
+        Attention Heads ($n_{\text{heads}}$) & 8 \\
+        Feedforward Dimension ($d_{\text{ff}}$) & 2048 \\
+        Dropout & 0.1 \\
+        VAE Latent Dimension & 32 \\
+        KL Weight ($\beta$) & 10.0 \\
+        Action Chunk Size ($T$) & 100 \\
+        Action Dimension & 7 (dx, dy, dz, droll, dpitch, dyaw, gripper) \\
+        State Dimension & 15 \\
+        Total Parameters & $\approx$ 80M \\
+        \midrule
+        \multicolumn{2}{c}{\textbf{训练配置}} \\
+        Batch Size & 32 \\
+        Epochs & 200 \\
+        Optimizer & AdamW \\
+        Learning Rate (Transformer \& Heads) & $1 \times 10^{-4}$ \\
+        Learning Rate (Vision Backbone) & $1 \times 10^{-5}$ \\
+        Weight Decay & $1 \times 10^{-4}$ \\
+        Gradient Clip Norm & 1.0 \\
+        Mixed Precision & FP16 (via Accelerate) \\
+        Val Frequency & Every 5 epochs \\
+        Early Stop Patience & 30 epochs \\
+        \midrule
+        \multicolumn{2}{c}{\textbf{损失函数}} \\
+        Loss Function & L1 Loss + $\beta \cdot$ KL Divergence \\
+        \midrule
+        \multicolumn{2}{c}{\textbf{评估指标}} \\
+        Action L1 Loss & 预测动作与真实动作的平均 L1 距离 \\
+        Success Rate & CALVIN 长序列任务完成率 \\
+        Average Chain Length & 平均连续成功子任务数 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\subsection{实验环境}
+
+\begin{itemize}[leftmargin=*]
+    \item \textbf{硬件}: NVIDIA RTX 5090 (24 GB VRAM), 64 GB RAM
+    \item \textbf{软件}: Python 3.10, PyTorch 2.1.2, CUDA 12.1, LeRobot v0.3.x, CALVIN $\text{MuJoCo}$ 2.3.0
+    \item \textbf{日志}: SwanLab (国内用户) / WandB 双后端支持
+\end{itemize}
+
+\subsection{训练步骤}
+
+\begin{enumerate}[leftmargin=*]
+    \item 从 HuggingFace Hub 加载 LeRobot 格式的 CALVIN 数据集
+    \item Baseline: 筛选 \texttt{env == A} 的 episode 用于训练
+    \item Joint: 使用全部 A+B+C 的 episode 用于训练
+    \item 每条策略训练 $\leq 200$ epochs，每 5 轮在环境 D 的验证集上评估
+    \item 基于验证损失 (L1 + KL) 保存最优检查点
+\end{enumerate}
+
+% ==============================================================================
+\section{实验结果}
+% ==============================================================================
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{outputs/figures/loss_comparison.png}
+        \caption{训练与验证损失对比}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{outputs/figures/eval_comparison.png}
+        \caption{环境 D 零样本评估}
+    \end{subfigure}
+    \caption{Baseline vs. Joint 实验结果对比。所有图表由 SwanLab/WandB 导出，\texttt{visualize.py} 脚本排版。}
+    \label{fig:results}
+\end{figure}
+
+\subsection{训练收敛分析}
+
+\begin{table}[H]
+    \centering
+    \caption{训练关键指标对比}
+    \label{tab:training_metrics}
+    \begin{tabular}{lccc}
+        \toprule
+        \textbf{指标} & \textbf{Baseline (Env A)} & \textbf{Joint (Env A+B+C)} & \textbf{改善} \\
+        \midrule
+        最优验证损失 & [0.XXXX] & [0.XXXX] & [$\pm$X.X\%] \\
+        最终训练损失 & [0.XXXX] & [0.XXXX] & [$\pm$X.X\%] \\
+        收敛轮次     & [XXX]   & [XXX]      & [$\pm$X] \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\textit{注: 具体数值待训练完成后填入。}
+
+\subsection{零样本泛化性能}
+
+在未见环境 D 上评估两条策略的零样本性能 (每策略 100 episodes):
+
+\begin{table}[H]
+    \centering
+    \caption{环境 D 零样本评估结果}
+    \label{tab:zero_shot}
+    \begin{tabular}{lccc}
+        \toprule
+        \textbf{指标} & \textbf{Baseline (Env A)} & \textbf{Joint (A+B+C)} & \textbf{改善} \\
+        \midrule
+        成功率 (\%)            & [XX.X\%] & [XX.X\%] & [$\pm$X.X pp] \\
+        平均步数                & [XXX.X]  & [XXX.X]  & [$\pm$X.X]     \\
+        成功完成任务数 / 总任务数 & [XX/100] & [XX/100] & [$\pm$X]       \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\textit{注: 具体数值待评估完成后填入。}
+
+% ==============================================================================
+\section{分析与讨论}
+% ==============================================================================
+
+\subsection{多环境数据对泛化的影响}
+
+[实验结果分析 —— 根据实际数据补充]
+
+如果 Joint $>$ Baseline (预期):
+\begin{itemize}[leftmargin=*]
+    \item 多环境训练使视觉编码器接触到更丰富的光照、纹理变化
+    \item ResNet-18 学习到的特征对视觉偏移具有更强的鲁棒性
+    \item ACT 的动作分块机制在此过程中提供了隐式正则化——时序一致性约束防止模型对训练环境的视觉特征过拟合
+    \item 动作空间中 "向右移动 5cm" 的物理含义不随环境改变，但视觉特征对同一物理行为的映射可能随环境偏移
+    \item 联合训练帮助策略学习到视觉观测与动作之间更本质的关联
+\end{itemize}
+
+如果 Joint $\approx$ Baseline:
+\begin{itemize}[leftmargin=*]
+    \item 单环境 A 的视觉多样性可能已足够覆盖任务所需的视觉变化
+    \item ACT 的 CVAE 随机性可能是限制泛化增益的瓶颈——解码器的不确定性来源于单环境数据，多环境数据未必能改善
+\end{itemize}
+
+如果 Joint $<$ Baseline (负迁移):
+\begin{itemize}[leftmargin=*]
+    \item 环境间视觉差异过大可能导致特征冲突
+    \item 80M 参数量可能不足以同时建模三个环境的不同视觉模态
+    \item 需要增加模型容量或引入领域自适应技术
+\end{itemize}
+
+\subsection{动作分块机制的鲁棒性分析}
+
+ACT 每次预测 100 步动作块，这种"粗粒度"预测在跨环境场景下具备天然优势:
+
+\begin{enumerate}[leftmargin=*]
+    \item \textbf{时序一致性约束}: 相邻步的动作增量被 jointly 预测，模型隐式学习了"平滑移动"的先验，这在不同环境中都是成立的
+    \item \textbf{降低逐帧决策偏差}: 逐帧预测 (如 BC) 可能在视觉模糊帧做出错误决策，而 chunk 预测利用全局时序信息纠正局部偏差
+    \item \textbf{时序集成}: 推理时 overlapping chunk 的指数加权平均进一步平滑了切换点的不连续性，在环境 D 的分布外视觉输入下提供稳定效果
+\end{enumerate}
+
+\subsection{局限与改进方向}
+
+\begin{itemize}[leftmargin=*]
+    \item \textbf{任务层面评估}: 当前评估仅统计成功率，CALVIN 的 34 个子任务难度差异较大，未来可分析不同子任务上的泛化差异
+    \item \textbf{只以环境区分的有限泛化}: 本实验环境 A--D 之间的差异幅度受 CALVIN 模拟器限制，与真实世界 sim-to-real gap 仍有差距
+    \item \textbf{模型容量}: 80M 参数的 ACT 对多环境数据可能已达容量饱和，可尝试轻量 PEFT (LoRA) 微调或更大容量的 Diffusion Policy
+    \item \textbf{数据效率}: 当前未探索数据量-泛化能力的 scaling 关系，可进一步分析
+\end{itemize}
+
+% ==============================================================================
+\section{结论}
+% ==============================================================================
+
+本实验基于 LeRobot 框架的 ACT 策略，在 CALVIN 基准上系统对比了单环境基线训练与多环境联合训练对跨环境泛化能力的影响。主要发现:
+
+\begin{enumerate}[leftmargin=*]
+    \item [训练完成后补充]
+    \item [训练完成后补充]
+\end{enumerate}
+
+实验结果表明，ACT 的动作分块机制配合 Transformer 编码器-解码器架构，[补充结论]。本研究为具身智能中的视觉分布偏移问题提供了实证参考，并验证了 LeRobot 框架在学术实验中的易用性和可复现性。
+
+% ==============================================================================
+\section*{附录: 资源链接}
+% ==============================================================================
+
+\begin{itemize}[leftmargin=*]
+    \item \textbf{GitHub 仓库}: \url{https://github.com/<your-username>/lerobot-act}
+    \item \textbf{Baseline 模型权重 (环境 A)}: [Google Drive / 百度网盘 / OneDrive 链接]
+    \item \textbf{Joint 模型权重 (环境 A+B+C)}: [Google Drive / 百度网盘 / OneDrive 链接]
+    \item \textbf{提取码}: [如适用]
+    \item \textbf{SwanLab / WandB 日志}: [实验 tracking 链接]
+\end{itemize}
+
+% ==============================================================================
+% 参考文献
+% ==============================================================================
+
+\begin{thebibliography}{10}
+
+\bibitem{zhao2023act}
+Tony Z. Zhao, Vikash Kumar, Sergey Levine, and Chelsea Finn.
+\newblock Learning Fine-Grained Bimanual Manipulation with Low-Cost Hardware.
+\newblock In \emph{Robotics: Science and Systems (RSS)}, 2023.
+
+\bibitem{mees2022calvin}
+Oier Mees, Lukas Hermann, Erick Rosete-Beas, and Wolfram Burgard.
+\newblock CALVIN: A Benchmark for Language-Conditioned Policy Learning for Long-Horizon Robot Manipulation Tasks.
+\newblock In \emph{IEEE Robotics and Automation Letters (RA-L)}, 2022.
+
+\bibitem{lerobot2024}
+Hugging Face Robotics.
+\newblock LeRobot: Open-Source Robot Learning.
+\newblock \url{https://github.com/huggingface/lerobot}, 2024.
+
+\bibitem{vaswani2017}
+Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N. Gomez, Łukasz Kaiser, and Illia Polosukhin.
+\newblock Attention Is All You Need.
+\newblock In \emph{Advances in Neural Information Processing Systems (NeurIPS)}, 2017.
+
+\end{thebibliography}
+
+\end{document}

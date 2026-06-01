@@ -1,0 +1,40 @@
+name: lerobot-act
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.10
+  - pip
+  - ffmpeg=7.1.1             # LeRobot 视频编解码依赖
+  - pytorch=2.1.2
+  - torchvision=0.16.2
+  - torchaudio=2.1.2
+  - pytorch-cuda=12.1         # 根据 CUDA 版本调整 (11.8 / 12.1 / 12.4)
+  - numpy=1.26
+  - opencv=4.9
+  - matplotlib=3.8
+  - tqdm
+  - pyyaml
+  - accelerate                # HuggingFace 混合精度训练
+  - pip:
+      # LeRobot 核心框架 (含 ACT 策略 + LeRobotDataset)
+      - lerobot
+
+      # CALVIN 基准环境及其依赖 (仅评估时需要)
+      - "calvin @ git+https://github.com/mees/calvin.git@main"
+      - gym==0.21.0
+      - mujoco==2.3.0
+      - mujoco-py==2.1.2.14
+      - cython<3.0
+
+      # 实验管理与可视化
+      - wandb
+      - swanlab
+
+      # Jupyter & 开发工具
+      - jupyter
+      - ipykernel
+      - tensorboard

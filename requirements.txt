@@ -1,0 +1,13 @@
+torch>=2.1.0
+torchvision>=0.16.0
+numpy>=1.26
+opencv-python>=4.8
+matplotlib>=3.8
+tqdm
+pyyaml
+accelerate
+wandb
+swanlab
+jupyter
+ipykernel
+lerobot
