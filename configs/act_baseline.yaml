@@ -17,7 +17,7 @@ data:
   val_envs: ["B"]
   strict_env_filter: true
   env_episode_map_path: null
-  local_dir: null
+  local_dir: "/root/autodl-tmp/calvin"
 
 # 以下参数与 act_joint.yaml 完全一致 (控制变量)
 policy:

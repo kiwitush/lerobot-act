@@ -194,18 +194,26 @@ def get_base_dataset(dataset):
 def _load_dataset(repo_id: str, split: str, local_dir: Optional[str]):
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-    try:
-        dataset = LeRobotDataset(repo_id, split=split)
-        logger.info("从 HuggingFace Hub 加载: %s (split=%s)", repo_id, split)
-        return dataset
-    except Exception as e:
-        logger.warning("从 Hub 加载失败: %s", e)
+    # 优先检查 repo_id 是否本身就是本地路径
+    repo_path = Path(repo_id)
+    if repo_path.exists():
+        logger.info("从本地路径加载: %s", repo_path)
+        return LeRobotDataset(str(repo_path))
 
+    # 其次检查 local_dir
     if local_dir is not None:
         local_path = Path(local_dir)
         if local_path.exists():
-            logger.info("回退到本地数据: %s", local_path)
-            return LeRobotDataset(str(local_path), split=split)
+            logger.info("从 local_dir 加载: %s", local_path)
+            return LeRobotDataset(str(local_path))
+
+    # 最后尝试 HuggingFace Hub (LeRobot 0.5+ 无 split 参数)
+    try:
+        dataset = LeRobotDataset(repo_id)
+        logger.info("从 HuggingFace Hub 加载: %s", repo_id)
+        return dataset
+    except Exception as e:
+        logger.warning("从 Hub 加载失败: %s", e)
 
     raise FileNotFoundError(
         f"无法加载数据集。请确认远端仓库 {repo_id} 可访问，"
@@ -255,11 +263,11 @@ def _filter_by_env(
     logger.info("环境筛选: %s -> 保留 %d/%d 个 episode", envs, len(matching_episodes), len(episode_env_map))
 
     try:
-        return LeRobotDataset(repo_id, split=split, episodes=matching_episodes)
+        return LeRobotDataset(repo_id, episodes=matching_episodes)
     except Exception:
         if local_dir is not None:
             logger.info("Hub 重建失败，回退到本地路径: %s", local_dir)
-            return LeRobotDataset(str(Path(local_dir)), split=split, episodes=matching_episodes)
+            return LeRobotDataset(str(Path(local_dir)), episodes=matching_episodes)
         raise
 
 

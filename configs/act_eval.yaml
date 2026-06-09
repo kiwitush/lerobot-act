@@ -12,8 +12,8 @@ model:
 data:
   eval_repo_id: "CollisionCode/calvin_d_d_lerobot_v2.1"
   eval_split: "train"
-  eval_envs: null
-  eval_local_dir: null
+  eval_envs: ["D"]
+  eval_local_dir: "/root/autodl-tmp/calvin"
   strict_eval_env_filter: false
   eval_env_episode_map_path: null
 
