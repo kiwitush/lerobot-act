@@ -10,12 +10,20 @@ experiment:
   output_dir: "./outputs"
 
 data:
-  repo_id: "CollisionCode/calvin_abc_d_lerobot_v2.1"
+  # 按环境映射: 每个 split 目录是一个独立的 LeRobot 数据集
+  repo_id:
+    A: "xiaoma26/calvin-lerobot"
+    B: "xiaoma26/calvin-lerobot"
+    C: "xiaoma26/calvin-lerobot"
   train_envs: ["A", "B", "C"]
   val_envs: ["A", "B", "C"]
-  strict_env_filter: true
+  strict_env_filter: false          # 每个 split 已对应一个环境，无需过滤
   env_episode_map_path: null
-  local_dir: "/root/autodl-tmp/calvin"
+  val_split_ratio: 0.1              # 从全量数据中划分验证集比例
+  local_dir:
+    A: "/root/autodl-tmp/calvin/splitA"
+    B: "/root/autodl-tmp/calvin/splitB"
+    C: "/root/autodl-tmp/calvin/splitC"
 
 # 以下参数与 act_baseline.yaml 完全一致 (控制变量)
 policy:

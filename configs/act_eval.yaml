@@ -10,10 +10,12 @@ model:
   joint_checkpoint:    "./outputs/checkpoints/act_joint/best_model.pt"
 
 data:
-  eval_repo_id: "CollisionCode/calvin_d_d_lerobot_v2.1"
+  eval_repo_id:
+    D: "xiaoma26/calvin-lerobot"
   eval_split: "train"
   eval_envs: ["D"]
-  eval_local_dir: "/root/autodl-tmp/calvin"
+  eval_local_dir:
+    D: "/root/autodl-tmp/calvin/splitD"
   strict_eval_env_filter: false
   eval_env_episode_map_path: null
 

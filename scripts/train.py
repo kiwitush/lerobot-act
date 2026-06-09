@@ -301,11 +301,12 @@ def main():
     strict_env_filter = data_cfg.get("strict_env_filter", True)
     env_episode_map_path = data_cfg.get("env_episode_map_path")
     local_dir = data_cfg.get("local_dir")
+    val_split_ratio = data_cfg.get("val_split_ratio", 0.0)
 
     logger.info("训练环境: %s", train_envs if train_envs else "全部")
     logger.info("验证环境: %s", val_envs if val_envs else "全部")
 
-    train_dataset = load_calvin_dataset(
+    full_dataset = load_calvin_dataset(
         repo_id=repo_id,
         split="train",
         envs=train_envs,
@@ -313,17 +314,30 @@ def main():
         strict_env_filter=strict_env_filter,
         env_episode_map_path=env_episode_map_path,
     )
-    val_dataset = load_calvin_dataset(
-        repo_id=repo_id,
-        split=data_cfg.get("val_split", "validation"),
-        envs=val_envs,
-        local_dir=local_dir,
-        strict_env_filter=strict_env_filter,
-        env_episode_map_path=env_episode_map_path,
-    )
 
-    dataset_spec = infer_dataset_spec(train_dataset, preferred_camera_names=config["policy"].get("camera_names"))
-    dataset_stats = get_dataset_stats(train_dataset)
+    # LeRobot 0.5+ 无 split 参数；若配置了 val_split_ratio 则手动划分
+    if val_split_ratio > 0:
+        n_total = len(full_dataset)
+        n_train = int(n_total * (1 - val_split_ratio))
+        n_val = n_total - n_train
+        train_dataset, val_dataset = torch.utils.data.random_split(
+            full_dataset, [n_train, n_val],
+            generator=torch.Generator().manual_seed(exp_cfg.get("seed", 42)),
+        )
+        logger.info("手动划分 train/val: %d/%d 帧", n_train, n_val)
+    else:
+        train_dataset = full_dataset
+        val_dataset = load_calvin_dataset(
+            repo_id=repo_id,
+            split="validation",
+            envs=val_envs,
+            local_dir=local_dir,
+            strict_env_filter=strict_env_filter,
+            env_episode_map_path=env_episode_map_path,
+        )
+
+    dataset_spec = infer_dataset_spec(full_dataset, preferred_camera_names=config["policy"].get("camera_names"))
+    dataset_stats = get_dataset_stats(full_dataset)
 
     train_loader = build_dataloader(
         train_dataset,
