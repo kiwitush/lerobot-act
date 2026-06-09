@@ -1,13 +1,10 @@
 """
-训练结果可视化，使用 LeRobot 训练输出的 metrics JSON。
+训练结果可视化，使用真实训练输出的 metrics JSON。
 
-生成用于实验报告的高质量对比图:
-  - Baseline vs. Joint 训练/验证损失曲线
-  - 损失对比柱状图
+生成用于实验报告的对比图:
+  - Baseline vs. Joint 训练/验证总损失曲线
+  - Baseline vs. Joint 训练/验证 Action L1 曲线
   - 零样本评估结果柱状图
-
-用法:
-    python scripts/visualize.py --logs-dir ./outputs/logs --output-dir ./outputs/figures
 """
 
 import argparse
@@ -30,6 +27,27 @@ def smooth_curve(values: np.ndarray, window: int = 10) -> np.ndarray:
     return np.convolve(values, kernel, mode="valid")
 
 
+def _plot_metric(ax, baseline_metrics, joint_metrics, metric_key: str, title: str, ylabel: str, smooth_window: int):
+    colors = {"baseline": "#2196F3", "joint": "#FF5722"}
+    for label, metrics, color in [
+        ("Baseline", baseline_metrics, colors["baseline"]),
+        ("Joint", joint_metrics, colors["joint"]),
+    ]:
+        values = np.array(metrics.get(metric_key, []), dtype=float)
+        if len(values) == 0:
+            continue
+        if len(values) > smooth_window:
+            smooth = smooth_curve(values, smooth_window)
+            ax.plot(smooth, color=color, label=label, linewidth=1.5)
+            ax.plot(values, color=color, alpha=0.15, linewidth=0.5)
+        else:
+            ax.plot(values, color=color, label=label, linewidth=1.5, marker="o", markersize=3)
+    ax.set_title(title)
+    ax.set_ylabel(ylabel)
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+
+
 def plot_training_curves(
     baseline_metrics: Dict[str, List[float]],
     joint_metrics: Dict[str, List[float]],
@@ -47,86 +65,29 @@ def plot_training_curves(
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     fig.suptitle(title, fontsize=14, fontweight="bold")
 
-    colors = {"baseline": "#2196F3", "joint": "#FF5722"}
+    _plot_metric(axes[0, 0], baseline_metrics, joint_metrics, "train_loss", "训练总损失", "Total Loss", smooth_window)
+    _plot_metric(axes[0, 1], baseline_metrics, joint_metrics, "val_loss", "验证总损失", "Total Loss", smooth_window)
+    _plot_metric(
+        axes[1, 0],
+        baseline_metrics,
+        joint_metrics,
+        "train_action_l1_loss",
+        "训练 Action L1",
+        "Action L1 Loss",
+        smooth_window,
+    )
+    _plot_metric(
+        axes[1, 1],
+        baseline_metrics,
+        joint_metrics,
+        "val_action_l1_loss",
+        "验证 Action L1",
+        "Action L1 Loss",
+        smooth_window,
+    )
 
-    # 训练损失
-    ax = axes[0, 0]
-    for label, metrics, c in [
-        ("Baseline", baseline_metrics, colors["baseline"]),
-        ("Joint", joint_metrics, colors["joint"]),
-    ]:
-        loss = np.array(metrics.get("train_loss", metrics.get("loss", [])))
-        if len(loss) > smooth_window:
-            loss_smooth = smooth_curve(loss, smooth_window)
-            ax.plot(loss_smooth, color=c, label=label, linewidth=1.5)
-            ax.plot(loss, color=c, alpha=0.15, linewidth=0.5)
-        elif len(loss) > 0:
-            ax.plot(loss, color=c, label=label, linewidth=1.5)
-    ax.set_xlabel("Epoch")
-    ax.set_ylabel("Action L1 Loss")
-    ax.set_title("训练损失")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-
-    # 验证损失
-    ax = axes[0, 1]
-    for label, metrics, c in [
-        ("Baseline", baseline_metrics, colors["baseline"]),
-        ("Joint", joint_metrics, colors["joint"]),
-    ]:
-        loss = np.array(metrics.get("val_loss", metrics.get("loss", [])))
-        if len(loss) > 0:
-            ax.plot(loss, color=c, label=label, linewidth=1.5, marker="o", markersize=3)
-    ax.set_xlabel("验证步")
-    ax.set_ylabel("Action L1 Loss")
-    ax.set_title("验证损失")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-
-    # 损失对比柱状图
-    ax = axes[1, 0]
-    categories = ["最优验证\n损失", "最终训练\n损失"]
-    x = np.arange(len(categories))
-    width = 0.35
-
-    train_bl = np.array(baseline_metrics.get("train_loss", baseline_metrics.get("loss", [0])))
-    train_jt = np.array(joint_metrics.get("train_loss", joint_metrics.get("loss", [0])))
-    val_bl = np.array(baseline_metrics.get("val_loss", baseline_metrics.get("loss", [0])))
-    val_jt = np.array(joint_metrics.get("val_loss", joint_metrics.get("loss", [0])))
-
-    baseline_vals = [
-        float(val_bl.min()) if len(val_bl) > 0 else 0,
-        float(train_bl[-1]) if len(train_bl) > 0 else 0,
-    ]
-    joint_vals = [
-        float(val_jt.min()) if len(val_jt) > 0 else 0,
-        float(train_jt[-1]) if len(train_jt) > 0 else 0,
-    ]
-
-    ax.bar(x - width / 2, baseline_vals, width, label="Baseline", color=colors["baseline"])
-    ax.bar(x + width / 2, joint_vals, width, label="Joint", color=colors["joint"])
-    ax.set_xticks(x)
-    ax.set_xticklabels(categories)
-    ax.set_title("损失对比")
-    ax.legend()
-    ax.grid(True, alpha=0.3, axis="y")
-
-    # 文字摘要
-    ax = axes[1, 1]
-    ax.axis("off")
-    bl_best = baseline_metrics.get("best_val_loss", baseline_vals[0])
-    jt_best = joint_metrics.get("best_val_loss", joint_vals[0])
-    summary_lines = [
-        "训练摘要",
-        "=" * 24,
-        f"Baseline 最优验证损失:  {bl_best:.6f}" if bl_best > 0 else "Baseline: N/A",
-        f"Joint 最优验证损失:     {jt_best:.6f}" if jt_best > 0 else "Joint: N/A",
-        "",
-        f"Baseline 最终训练损失: {baseline_vals[1]:.6f}" if baseline_vals[1] > 0 else "",
-        f"Joint 最终训练损失:    {joint_vals[1]:.6f}" if joint_vals[1] > 0 else "",
-    ]
-    ax.text(0.1, 0.9, "\n".join(summary_lines), transform=ax.transAxes,
-            fontsize=11, fontfamily="monospace", verticalalignment="top")
+    for ax in axes[1]:
+        ax.set_xlabel("Epoch / Val Step")
 
     plt.tight_layout()
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -149,36 +110,33 @@ def plot_eval_results(eval_results_path: str, output_path: str):
     baseline = results.get("baseline", {})
     joint = results.get("joint", {})
 
-    fig, axes = plt.subplots(1, 2, figsize=(10, 5))
-    fig.suptitle(f"环境 {results.get('env', 'D')} 零样本评估",
-                 fontsize=13, fontweight="bold")
+    if baseline.get("metric") == "success_rate" and joint.get("metric") == "success_rate":
+        metric_label = "成功率 (%)"
+        values = [baseline.get("success_rate", 0) * 100, joint.get("success_rate", 0) * 100]
+        title = "任务成功率"
+    else:
+        metric_label = "Action L1 Loss"
+        values = [baseline.get("action_l1_loss", 0), joint.get("action_l1_loss", 0)]
+        title = "离线动作误差"
+
+    fig, ax = plt.subplots(1, 1, figsize=(7, 5))
+    fig.suptitle(f"环境 {results.get('env', 'D')} 零样本评估", fontsize=13, fontweight="bold")
 
     colors = {"baseline": "#2196F3", "joint": "#FF5722"}
     models = ["Baseline", "Joint"]
-
-    # 成功率
-    ax = axes[0]
-    sr = [baseline.get("success_rate", 0) * 100, joint.get("success_rate", 0) * 100]
-    bars = ax.bar(models, sr, color=[colors["baseline"], colors["joint"]])
-    ax.set_ylabel("成功率 (%)")
-    ax.set_title("任务成功率")
-    for bar, val in zip(bars, sr):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 1,
-                f"{val:.1f}%", ha="center", fontweight="bold")
-    ax.set_ylim(0, max(sr) * 1.3 + 5 if max(sr) > 0 else 10)
-    ax.grid(True, alpha=0.3, axis="y")
-
-    # 平均步数
-    ax = axes[1]
-    steps = [baseline.get("avg_steps", 0), joint.get("avg_steps", 0)]
-    bars = ax.bar(models, steps, color=[colors["baseline"], colors["joint"]])
-    ax.set_ylabel("平均完成步数")
-    ax.set_title("任务完成效率")
-    for bar, val in zip(bars, steps):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 1,
-                f"{val:.1f}", ha="center", fontweight="bold")
-    if max(steps) > 0:
-        ax.set_ylim(0, max(steps) * 1.3)
+    bars = ax.bar(models, values, color=[colors["baseline"], colors["joint"]])
+    ax.set_ylabel(metric_label)
+    ax.set_title(title)
+    for bar, val in zip(bars, values):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + (max(values) * 0.02 if max(values) > 0 else 0.02),
+            f"{val:.3f}" if metric_label == "Action L1 Loss" else f"{val:.1f}%",
+            ha="center",
+            fontweight="bold",
+        )
+    if max(values) > 0:
+        ax.set_ylim(0, max(values) * 1.25)
     ax.grid(True, alpha=0.3, axis="y")
 
     plt.tight_layout()
@@ -202,30 +160,20 @@ def main():
     baseline_metrics_path = Path(args.logs_dir) / "act_baseline_metrics.json"
     joint_metrics_path = Path(args.logs_dir) / "act_joint_metrics.json"
 
-    if baseline_metrics_path.exists() and joint_metrics_path.exists():
-        with open(baseline_metrics_path, encoding="utf-8") as f:
-            baseline_metrics = json.load(f)
-        with open(joint_metrics_path, encoding="utf-8") as f:
-            joint_metrics = json.load(f)
-        logger.info("加载真实训练指标。")
-    else:
-        logger.warning("未找到已保存的指标 (%s, %s)，使用占位数据生成示例图。",
-                      baseline_metrics_path, joint_metrics_path)
-        rng = np.random.RandomState(42)
-        epochs = 200
-        baseline_metrics = {
-            "train_loss": (np.exp(-np.arange(epochs) / 50) * 0.3 + 0.02 + rng.randn(epochs) * 0.005).tolist(),
-            "val_loss": (np.exp(-np.arange(0, epochs, 5) / 45) * 0.28 + 0.025 + rng.randn(epochs // 5) * 0.003).tolist(),
-            "best_val_loss": 0.022,
-        }
-        joint_metrics = {
-            "train_loss": (np.exp(-np.arange(epochs) / 45) * 0.25 + 0.018 + rng.randn(epochs) * 0.004).tolist(),
-            "val_loss": (np.exp(-np.arange(0, epochs, 5) / 40) * 0.22 + 0.015 + rng.randn(epochs // 5) * 0.003).tolist(),
-            "best_val_loss": 0.014,
-        }
+    if not baseline_metrics_path.exists() or not joint_metrics_path.exists():
+        raise FileNotFoundError(
+            f"未找到真实训练指标: {baseline_metrics_path} 或 {joint_metrics_path}"
+        )
+
+    with open(baseline_metrics_path, encoding="utf-8") as f:
+        baseline_metrics = json.load(f)
+    with open(joint_metrics_path, encoding="utf-8") as f:
+        joint_metrics = json.load(f)
+    logger.info("加载真实训练指标。")
 
     plot_training_curves(
-        baseline_metrics, joint_metrics,
+        baseline_metrics,
+        joint_metrics,
         str(output_dir / "training_curves.png"),
         title="ACT 训练: Baseline vs. Joint (基于 LeRobot)",
         smooth_window=args.smooth,

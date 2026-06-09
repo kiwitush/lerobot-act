@@ -1,6 +1,6 @@
 # ACT 基线训练 — 单一 CALVIN 环境
-# 在环境 A 上训练 ACT 策略作为对照实验。
-# 使用 HuggingFace Hub 的 lerobot/calvin 数据集，筛选 env=A 片段。
+# 在环境 B 上训练 ACT 策略作为对照实验。
+# 使用 HuggingFace Hub 的 lerobot/calvin 数据集，筛选 env=B 片段。
 #
 # 若无法访问 HuggingFace Hub，可将数据集下载到本地后通过 data.local_dir 指定。
 
@@ -12,13 +12,16 @@ experiment:
   output_dir: "./outputs"
 
 data:
-  repo_id: "lerobot/calvin"      # HuggingFace Hub 上的 LeRobot 格式 CALVIN 数据集
-  train_envs: ["A"]              # 仅使用环境 A 的片段训练
-  local_dir: null                # 本地 LeRobot 数据回退路径 (可选)
+  repo_id: "CollisionCode/calvin_abc_d_lerobot_v2.1"
+  train_envs: ["B"]
+  val_envs: ["B"]
+  strict_env_filter: true
+  env_episode_map_path: null
+  local_dir: null
 
 # 以下参数与 act_joint.yaml 完全一致 (控制变量)
 policy:
-  camera_names: ["rgb_static", "rgb_gripper"]
+  camera_names: ["agentview", "eye_in_hand"]   # 若与数据集不一致，训练脚本会自动推断覆盖
   hidden_dim: 512
   n_encoder_layers: 4
   n_decoder_layers: 7

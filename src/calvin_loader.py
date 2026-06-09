@@ -1,56 +1,97 @@
 """
-CALVIN 数据加载器，封装 LeRobotDataset 与环境筛选逻辑。
-
-优先从 HuggingFace Hub 加载 lerobot/calvin，也可回退到本地 LeRobot 格式数据。
+CALVIN 数据加载器，封装 LeRobotDataset、环境筛选和数据特征推断。
 """
 
+import json
 import logging
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import torch
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_TRAIN_REPO_ID = "CollisionCode/calvin_abc_d_lerobot_v2.1"
+DEFAULT_EVAL_REPO_ID = "CollisionCode/calvin_d_d_lerobot_v2.1"
+
+
+def load_calvin_dataset(
+    repo_id: Union[str, Dict[str, str]] = DEFAULT_TRAIN_REPO_ID,
+    split: str = "train",
+    envs: Optional[List[str]] = None,
+    local_dir: Optional[Union[str, Dict[str, str]]] = None,
+    strict_env_filter: bool = True,
+    env_episode_map_path: Optional[str] = None,
+):
+    """加载 CALVIN 数据集。
+
+    支持两种数据组织方式:
+      1. 单个 repo/path，要求数据集中自带环境标签，才能执行 env 过滤。
+      2. `{env_name: repo_id}` 映射，按环境分别加载后拼接。
+    """
+    if isinstance(repo_id, dict):
+        if not envs:
+            raise ValueError("repo_id 为按环境映射时，必须显式提供 envs。")
+
+        datasets = []
+        for env in envs:
+            if env not in repo_id:
+                raise ValueError(f"未为环境 {env} 提供 repo_id。可用键: {sorted(repo_id)}")
+            env_local_dir = None
+            if isinstance(local_dir, dict):
+                env_local_dir = local_dir.get(env)
+            dataset = _load_dataset(repo_id[env], split, env_local_dir)
+            datasets.append(dataset)
+
+        if len(datasets) == 1:
+            return datasets[0]
+
+        logger.info("按环境独立数据源加载: %s", envs)
+        return torch.utils.data.ConcatDataset(datasets)
+
+    dataset = _load_dataset(repo_id, split, local_dir if isinstance(local_dir, str) else None)
+
+    if envs:
+        dataset = _filter_by_env(
+            dataset=dataset,
+            envs=envs,
+            repo_id=repo_id,
+            split=split,
+            local_dir=local_dir if isinstance(local_dir, str) else None,
+            strict_env_filter=strict_env_filter,
+            env_episode_map_path=env_episode_map_path,
+        )
+
+    return dataset
+
 
 def build_calvin_dataloader(
-    repo_id: str = "lerobot/calvin",
+    repo_id: Union[str, Dict[str, str]] = DEFAULT_TRAIN_REPO_ID,
     split: str = "train",
     envs: Optional[List[str]] = None,
     batch_size: int = 32,
     num_workers: int = 4,
     shuffle: bool = True,
-    local_dir: Optional[str] = None,
+    local_dir: Optional[Union[str, Dict[str, str]]] = None,
+    strict_env_filter: bool = True,
+    env_episode_map_path: Optional[str] = None,
 ):
-    """构建 CALVIN DataLoader，返回 LeRobot 兼容的 batch dict。
+    """构建训练/评估 DataLoader。"""
+    dataset = load_calvin_dataset(
+        repo_id=repo_id,
+        split=split,
+        envs=envs,
+        local_dir=local_dir,
+        strict_env_filter=strict_env_filter,
+        env_episode_map_path=env_episode_map_path,
+    )
 
-    优先从 HuggingFace Hub 加载 `repo_id`，失败时回退到 `local_dir`。
-
-    Args:
-        repo_id: HuggingFace Hub 上的 LeRobot 格式数据集 ID。
-        split: 数据集分片，如 "train" 或 "validation"。
-        envs: 要保留的环境列表，如 ["A"] 或 ["A","B","C"]。None 表示不过滤。
-        batch_size: 批大小。
-        num_workers: DataLoader 工作进程数。
-        shuffle: 是否打乱数据。
-        local_dir: 本地 LeRobot 格式数据目录，作为 Hub 加载失败时的回退。
-
-    Returns:
-        torch.utils.data.DataLoader: 每个 batch 为 dict，键包含
-            observation.state, observation.images.{cam}, action, action_is_pad 等。
-    """
-    from lerobot.datasets.lerobot_dataset import LeRobotDataset
-
-    dataset = _load_dataset(repo_id, split, local_dir)
-
-    if envs is not None and len(envs) > 0:
-        dataset = _filter_by_env(dataset, envs, repo_id, split, local_dir)
-
+    base_dataset = get_base_dataset(dataset)
     logger.info(
         "%s 分片加载完成: %d 帧, %d 片段%s",
         split,
         len(dataset),
-        dataset.num_episodes,
+        getattr(base_dataset, "num_episodes", -1),
         f", 环境筛选: {envs}" if envs else "",
     )
 
@@ -60,43 +101,97 @@ def build_calvin_dataloader(
         shuffle=shuffle,
         num_workers=num_workers,
         pin_memory=True,
-        drop_last=True,
+        drop_last=shuffle,
     )
 
 
 def build_calvin_val_dataloader(
-    repo_id: str = "lerobot/calvin",
+    repo_id: Union[str, Dict[str, str]] = DEFAULT_TRAIN_REPO_ID,
     batch_size: int = 32,
     num_workers: int = 0,
-    local_dir: Optional[str] = None,
+    local_dir: Optional[Union[str, Dict[str, str]]] = None,
+    envs: Optional[List[str]] = None,
+    strict_env_filter: bool = True,
+    env_episode_map_path: Optional[str] = None,
 ):
-    """构建验证 DataLoader，使用 validation 分片，不打乱。"""
-    from lerobot.datasets.lerobot_dataset import LeRobotDataset
-
-    dataset = _load_dataset(repo_id, "validation", local_dir)
-
-    logger.info("验证集加载完成: %d 帧, %d 片段", len(dataset), dataset.num_episodes)
-
-    return torch.utils.data.DataLoader(
-        dataset,
+    """构建验证 DataLoader，不打乱。"""
+    return build_calvin_dataloader(
+        repo_id=repo_id,
+        split="validation",
+        envs=envs,
         batch_size=batch_size,
-        shuffle=False,
         num_workers=num_workers,
-        pin_memory=True,
-        drop_last=False,
+        shuffle=False,
+        local_dir=local_dir,
+        strict_env_filter=strict_env_filter,
+        env_episode_map_path=env_episode_map_path,
     )
 
 
-def get_dataset_stats(repo_id: str = "lerobot/calvin", local_dir: Optional[str] = None):
-    """获取数据集归一化统计量，用于配置 ACTPolicy 的输入/输出归一化。"""
-    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+def get_dataset_stats(dataset_or_repo=DEFAULT_TRAIN_REPO_ID, local_dir: Optional[str] = None):
+    """获取数据集归一化统计量。"""
+    dataset = dataset_or_repo
+    if isinstance(dataset_or_repo, (str, dict)):
+        dataset = load_calvin_dataset(dataset_or_repo, split="train", local_dir=local_dir)
 
-    dataset = _load_dataset(repo_id, "train", local_dir)
-    return dataset.stats
+    base_dataset = get_base_dataset(dataset)
+    if hasattr(base_dataset, "stats"):
+        return base_dataset.stats
+    if hasattr(base_dataset, "meta") and hasattr(base_dataset.meta, "stats"):
+        return base_dataset.meta.stats
+    return None
+
+
+def infer_dataset_spec(dataset, preferred_camera_names: Optional[List[str]] = None) -> Dict[str, Any]:
+    """从 LeRobotDataset 样本中推断 ACT 需要的输入/输出特征。"""
+    base_dataset = get_base_dataset(dataset)
+    if len(base_dataset) == 0:
+        raise ValueError("数据集为空，无法推断特征。")
+
+    sample = base_dataset[0]
+
+    discovered_cameras = []
+    camera_shapes = {}
+    for key, value in sample.items():
+        if not key.startswith("observation.images."):
+            continue
+        camera_name = key.split("observation.images.", 1)[1]
+        discovered_cameras.append(camera_name)
+        camera_shapes[camera_name] = _normalize_image_shape(_shape_from_value(value))
+
+    if preferred_camera_names:
+        ordered_cameras = [cam for cam in preferred_camera_names if cam in camera_shapes]
+        ordered_cameras.extend(cam for cam in discovered_cameras if cam not in ordered_cameras)
+        camera_names = ordered_cameras
+    else:
+        camera_names = discovered_cameras
+
+    if not camera_names:
+        raise ValueError("数据集未暴露任何 observation.images.* 特征，无法构建视觉 ACT。")
+
+    state_dim = _infer_vector_dim(sample.get("observation.state"))
+    action_dim = _infer_vector_dim(sample.get("action"))
+    if state_dim is None or action_dim is None:
+        raise ValueError("无法从数据集样本中推断 observation.state/action 维度。")
+
+    return {
+        "camera_names": camera_names,
+        "camera_shapes": camera_shapes,
+        "state_dim": state_dim,
+        "action_dim": action_dim,
+    }
+
+
+def get_base_dataset(dataset):
+    """对 ConcatDataset 取第一个底层数据集，便于读取 stats / meta。"""
+    if isinstance(dataset, torch.utils.data.ConcatDataset):
+        if not dataset.datasets:
+            raise ValueError("ConcatDataset 为空。")
+        return get_base_dataset(dataset.datasets[0])
+    return dataset
 
 
 def _load_dataset(repo_id: str, split: str, local_dir: Optional[str]):
-    """尝试从 Hub 加载，失败则回退到本地目录。"""
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
     try:
@@ -113,97 +208,164 @@ def _load_dataset(repo_id: str, split: str, local_dir: Optional[str]):
             return LeRobotDataset(str(local_path), split=split)
 
     raise FileNotFoundError(
-        f"无法加载数据集。请确认 {repo_id} 存在于 HuggingFace Hub，"
-        f"或通过 --data.local_dir 指定本地 LeRobot 格式数据路径。"
+        f"无法加载数据集。请确认远端仓库 {repo_id} 可访问，"
+        f"或通过 data.local_dir 指定本地路径。"
     )
 
 
-def _filter_by_env(dataset, envs: List[str], repo_id: str, split: str, local_dir: Optional[str] = None):
-    """根据环境标签筛选数据集，使用 LeRobotDataset 的 episodes 参数重建。
-
-    LeRobotDataset.__init__ 接受 episodes: list[int] | None 参数，
-    直接通过该参数筛选比 Subset 更干净，能正确复用视频读取器等内部状态。
-    """
+def _filter_by_env(
+    dataset,
+    envs: List[str],
+    repo_id: str,
+    split: str,
+    local_dir: Optional[str] = None,
+    strict_env_filter: bool = True,
+    env_episode_map_path: Optional[str] = None,
+):
+    """按 episode 环境标签筛选数据。筛选失败时默认直接报错。"""
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
     env_col = _find_env_column(dataset)
-    if env_col is None:
-        logger.warning("数据集中未找到环境标签列，无法筛选环境。将使用全部数据。")
-        return dataset
+    episode_env_map = _build_episode_env_map(dataset, env_col) if env_col is not None else None
 
-    env_set = set(envs)
+    if episode_env_map is None and env_episode_map_path:
+        episode_env_map = _load_external_episode_env_map(env_episode_map_path)
 
-    episode_env_map = _build_episode_env_map(dataset, env_col)
     if episode_env_map is None:
-        logger.warning("无法读取 episode→env 映射，将使用全部数据。")
+        message = (
+            f"数据集 {repo_id} (split={split}) 无法提供环境标签，"
+            f"不能安全完成 env 过滤 {envs}。请提供带环境元数据的数据集，"
+            "或通过 data.env_episode_map_path 提供 episode->env 映射文件。"
+        )
+        if strict_env_filter:
+            raise ValueError(message)
+        logger.warning(message)
         return dataset
 
+    env_set = {str(env) for env in envs}
     matching_episodes = [
         ep_idx for ep_idx, ep_env in episode_env_map.items()
-        if ep_env in env_set
+        if str(ep_env) in env_set
     ]
 
-    if len(matching_episodes) == 0:
-        available = set(episode_env_map.values())
-        raise ValueError(
-            f"环境筛选 {envs} 后数据集为空！可用环境: {available}"
-        )
+    if not matching_episodes:
+        available = sorted({str(v) for v in episode_env_map.values()})
+        raise ValueError(f"环境筛选 {envs} 后数据集为空，可用环境: {available}")
 
-    logger.info("环境筛选: %s → 保留 %d/%d 个 episode",
-                envs, len(matching_episodes), len(episode_env_map))
+    logger.info("环境筛选: %s -> 保留 %d/%d 个 episode", envs, len(matching_episodes), len(episode_env_map))
 
-    # 优先从 Hub 重建，失败则回退到本地路径
     try:
         return LeRobotDataset(repo_id, split=split, episodes=matching_episodes)
     except Exception:
         if local_dir is not None:
-            logger.info("Hub 重建失败，回退到本地路径筛选: %s", local_dir)
+            logger.info("Hub 重建失败，回退到本地路径: %s", local_dir)
             return LeRobotDataset(str(Path(local_dir)), split=split, episodes=matching_episodes)
         raise
 
 
-def _build_episode_env_map(dataset, env_col: str) -> dict:
-    """构建 {episode_index: env_label} 映射表。"""
-    # 从 hf_dataset 读取 (episode_index, env_col) 并去重
+def _load_external_episode_env_map(path: str) -> Dict[int, str]:
+    path_obj = Path(path)
+    if not path_obj.exists():
+        raise FileNotFoundError(f"环境映射文件不存在: {path}")
+
+    with open(path_obj, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+
+    if isinstance(payload, dict):
+        return {int(k): str(v) for k, v in payload.items()}
+
+    if isinstance(payload, list):
+        mapping = {}
+        for item in payload:
+            mapping[int(item["episode_index"])] = str(item["env"])
+        return mapping
+
+    raise ValueError("环境映射文件格式不支持，需为 dict 或 list[{'episode_index','env'}]。")
+
+
+def _build_episode_env_map(dataset, env_col: Optional[str]) -> Optional[Dict[int, str]]:
+    """读取每条 episode 的环境标签，返回 {episode_index: env_label}。"""
+    if env_col is None:
+        return None
+
     if hasattr(dataset, "hf_dataset"):
         hf = dataset.hf_dataset
-        if env_col in hf.column_names and "episode_index" in hf.column_names:
-            # 取每个 episode 的第一条记录的环境标签
+        if env_col in getattr(hf, "column_names", []) and "episode_index" in getattr(hf, "column_names", []):
             seen = {}
             for ep_idx, env_val in zip(hf["episode_index"], hf[env_col]):
                 ep_idx = int(ep_idx)
                 if ep_idx not in seen:
-                    seen[ep_idx] = env_val
-            return seen
+                    seen[ep_idx] = str(env_val)
+            if seen:
+                return seen
 
-    # 从 episodes 元数据读取
-    if hasattr(dataset, "episodes") and hasattr(dataset.episodes, "column_names"):
-        eps = dataset.episodes
-        if env_col in eps.column_names:
-            return {
-                i: eps[env_col][i]
-                for i in range(len(eps[env_col]))
-            }
+    episode_tables = []
+    if hasattr(dataset, "episodes"):
+        episode_tables.append(dataset.episodes)
+    if hasattr(dataset, "meta") and hasattr(dataset.meta, "episodes"):
+        episode_tables.append(dataset.meta.episodes)
+
+    for eps in episode_tables:
+        column_names = getattr(eps, "column_names", [])
+        if env_col not in column_names:
+            continue
+
+        episode_indices = None
+        for candidate in ["episode_index", "index", "episode_id"]:
+            if candidate in column_names:
+                episode_indices = eps[candidate]
+                break
+
+        if episode_indices is None:
+            episode_indices = list(range(len(eps[env_col])))
+
+        mapping = {}
+        for idx, env_val in zip(episode_indices, eps[env_col]):
+            mapping[int(idx)] = str(env_val)
+        if mapping:
+            return mapping
 
     return None
 
 
+def _find_env_column(dataset) -> Optional[str]:
+    """在数据集元数据中查找环境标签列名。"""
+    candidate_columns = ["env", "environment", "env_name", "scene", "scene_name"]
 
-def _find_env_column(dataset) -> str:
-    """在数据集元数据中查找环境标签列。"""
-    # 检查 hf_dataset 的列
+    collections = []
     if hasattr(dataset, "hf_dataset"):
-        hf = dataset.hf_dataset
-        for col in ["env", "environment", "env_name"]:
-            if col in hf.column_names:
-                return col
+        collections.append(getattr(dataset.hf_dataset, "column_names", []))
+    if hasattr(dataset, "episodes"):
+        collections.append(getattr(dataset.episodes, "column_names", []))
+    if hasattr(dataset, "meta") and hasattr(dataset.meta, "episodes"):
+        collections.append(getattr(dataset.meta.episodes, "column_names", []))
 
-    # 检查 episode 元数据
-    if hasattr(dataset, "episodes") and hasattr(dataset.episodes, "column_names"):
-        for col in ["env", "environment", "env_name"]:
-            if col in dataset.episodes.column_names:
+    for column_names in collections:
+        for col in candidate_columns:
+            if col in column_names:
                 return col
 
     return None
 
 
+def _shape_from_value(value: Any):
+    if value is None:
+        return None
+    if hasattr(value, "shape"):
+        return tuple(int(x) for x in value.shape)
+    return None
+
+
+def _normalize_image_shape(shape):
+    if shape is None or len(shape) != 3:
+        raise ValueError(f"无法识别图像 shape: {shape}")
+    if shape[0] in (1, 3):
+        return tuple(shape)
+    return (shape[2], shape[0], shape[1])
+
+
+def _infer_vector_dim(value: Any) -> Optional[int]:
+    shape = _shape_from_value(value)
+    if shape is None or len(shape) == 0:
+        return None
+    return int(shape[-1])

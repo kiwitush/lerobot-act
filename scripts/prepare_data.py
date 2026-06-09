@@ -33,9 +33,11 @@ def collect_episodes(input_dir: str, envs: Optional[List[str]] = None) -> List[P
     if not episodes:
         raise FileNotFoundError(f"在 {input_dir} 中未找到 episode 目录。")
 
-    # 若有环境标签映射表，在此筛选
     if envs:
-        logger.info("环境筛选: %s (需要 episode→env 映射)", envs)
+        raise NotImplementedError(
+            "原始 CALVIN .npz 转换暂不支持直接按 envs 筛选。"
+            "请先提供 episode->env 映射并完成数据转换后再切分。"
+        )
 
     logger.info("找到 %d 个 episode 目录。", len(episodes))
     return episodes
@@ -96,8 +98,6 @@ def convert_to_lerobot(
         logger.info("图像: %s, 状态: %d dim, 动作: %d dim",
                     img_shape, state_dim, action_dim)
 
-        # 检查是否有 LeRobot 3.0+ 的 create 方法
-        # 较新版本支持从已有数据直接创建
         if hasattr(LeRobotDataset, "create"):
             _convert_via_create(
                 episodes, output_dir, camera_names, img_shape, state_dim, action_dim
@@ -106,8 +106,6 @@ def convert_to_lerobot(
             _convert_via_record(
                 episodes, output_dir, camera_names, img_shape, state_dim, action_dim
             )
-
-        logger.info("转换完成！LeRobot 格式数据已保存至 %s", output_dir)
 
     finally:
         if tmp_dir.exists():
@@ -130,21 +128,17 @@ def _convert_via_create(episodes, output_dir, camera_names, img_shape, state_dim
 
     # 使用 create 创建空数据集，再逐 episode 添加
     # 注意: 具体 API 以实际安装的 lerobot 版本为准
-    logger.info("使用 LeRobotDataset.create 创建数据集...")
-    # 此函数签名可能因版本而异，实际使用时请参考 lerobot 文档
-    logger.warning(
-        "LeRobotDataset.create API 因版本而异。"
-        "若转换失败，请使用 lerobot/calvin 在线数据集或参考: "
-        "https://huggingface.co/docs/lerobot"
+    raise NotImplementedError(
+        "当前仓库尚未实现稳定的 CALVIN .npz -> LeRobotDataset.create 转换流程。"
+        "请优先使用远端 LeRobot 格式数据集。"
     )
 
 
 def _convert_via_record(episodes, output_dir, camera_names, img_shape, state_dim, action_dim):
     """通过逐个录制的方式转换 (v2.x 兼容)。"""
-    logger.info("使用逐帧录制方式转换...")
-    logger.warning(
-        "此方式较慢且需要视频编码。建议直接使用 HuggingFace Hub 的 "
-        "lerobot/calvin 数据集以节省时间。"
+    raise NotImplementedError(
+        "当前仓库尚未实现稳定的逐帧录制转换流程。"
+        "请优先使用远端 LeRobot 格式数据集。"
     )
 
 

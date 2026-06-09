@@ -1,11 +1,8 @@
 """
 零样本跨环境评估脚本。
 
-加载训练好的 baseline 和 joint 模型，在未见环境 D 上评估并对比。
-使用 LeRobot ACTPolicy 的 select_action 接口进行推理。
-
-用法:
-    python scripts/eval.py --config configs/act_eval.yaml
+优先在未见环境 D 上进行仿真 SuccessRate 评估；
+若仿真环境不可用，则回退到环境 D 数据集上的离线动作误差评估。
 """
 
 import argparse
@@ -13,8 +10,10 @@ import json
 import logging
 import random
 import sys
+from collections import defaultdict
+from importlib import import_module
 from pathlib import Path
-from typing import Dict
+from typing import Callable, Dict, Tuple
 
 import numpy as np
 import torch
@@ -23,45 +22,155 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.calvin_env import evaluate_policy_on_calvin
-from src.utils.policy_utils import build_act_config
+from src.calvin_loader import DEFAULT_EVAL_REPO_ID, get_dataset_stats, load_calvin_dataset
+from src.utils.policy_utils import build_act_config, extract_policy_forward_metrics, resolve_policy_config
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def load_policy(checkpoint_path: str, config: Dict, device: torch.device):
+def create_preprocessor(policy, dataset_stats) -> Callable:
+    if dataset_stats is None:
+        return lambda batch: batch
+
+    config_obj = getattr(policy, "config", getattr(policy, "cfg", None))
+    if config_obj is None:
+        return lambda batch: batch
+
+    for module_name in [
+        "lerobot.policies.factory",
+        "lerobot.common.policies.factory",
+    ]:
+        try:
+            module = import_module(module_name)
+            make_pre_post_processors = getattr(module, "make_pre_post_processors")
+            preprocess, _ = make_pre_post_processors(config_obj, dataset_stats=dataset_stats)
+            return preprocess
+        except Exception:
+            continue
+
+    logger.warning("未能初始化 LeRobot 预处理器，回退为 no-op。")
+    return lambda batch: batch
+
+
+def load_policy(checkpoint_path: str, config: Dict, device: torch.device) -> Tuple[torch.nn.Module, Dict, Dict, Dict]:
     """从检查点加载 LeRobot ACTPolicy。"""
     from lerobot.policies.act.modeling_act import ACTPolicy
 
-    act_cfg = build_act_config(config["policy"])
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    dataset_spec = ckpt.get("dataset_spec")
+    policy_cfg = ckpt.get("policy_config") or resolve_policy_config(config["policy"], dataset_spec)
+
+    act_cfg = build_act_config(policy_cfg)
     policy = ACTPolicy(act_cfg)
     policy.to(device)
-
-    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     policy.load_state_dict(ckpt["model_state_dict"])
     policy.eval()
 
     logger.info("已加载检查点: %s (epoch %d)", checkpoint_path, ckpt.get("epoch", -1))
-    return policy
+    return policy, ckpt, policy_cfg, dataset_spec or {}
 
 
-def run_zero_shot_eval(policy, eval_cfg: Dict, device: torch.device) -> Dict:
-    """运行零样本评估，若 CALVIN 环境不可用则返回占位结果。"""
-    try:
-        return evaluate_policy_on_calvin(
-            policy=policy,
-            env_name=eval_cfg["env_name"],
-            num_episodes=eval_cfg["num_episodes"],
-            max_steps=eval_cfg["max_steps"],
-            device=str(device),
+@torch.no_grad()
+def evaluate_policy_on_dataset(
+    policy,
+    dataloader,
+    preprocess_batch: Callable,
+) -> Dict:
+    """在离线数据集上评估动作误差。"""
+    policy.eval()
+    metric_sums = defaultdict(float)
+    n_batches = 0
+
+    for batch in dataloader:
+        batch = preprocess_batch(batch)
+        output = policy.forward(batch)
+        _, metrics = extract_policy_forward_metrics(output)
+        for key, value in metrics.items():
+            metric_sums[key] += value
+        n_batches += 1
+
+    if n_batches == 0:
+        raise RuntimeError("离线评估数据为空，无法计算动作误差。")
+
+    avg_metrics = {key: value / n_batches for key, value in metric_sums.items()}
+    return {
+        "metric": "action_l1_loss",
+        "action_l1_loss": avg_metrics.get("action_l1_loss", avg_metrics["loss"]),
+        "loss": avg_metrics["loss"],
+        "kl_loss": avg_metrics.get("kl_loss", 0.0),
+        "num_batches": n_batches,
+    }
+
+
+def run_zero_shot_eval(
+    policy,
+    config: Dict,
+    policy_cfg: Dict,
+    dataset_spec: Dict,
+    preprocess_batch: Callable,
+    device: torch.device,
+) -> Dict:
+    """优先仿真 SuccessRate；失败则在环境 D 数据集上做动作误差评估。"""
+    eval_cfg = config["eval"]
+    data_cfg = config.get("data", {})
+    mode = eval_cfg.get("mode", "auto").lower()
+    last_error = None
+
+    if mode in {"auto", "sim"}:
+        try:
+            return evaluate_policy_on_calvin(
+                policy=policy,
+                env_name=eval_cfg["env_name"],
+                num_episodes=eval_cfg["num_episodes"],
+                max_steps=eval_cfg["max_steps"],
+                device=str(device),
+                preprocess_batch=preprocess_batch,
+                camera_names=policy_cfg["camera_names"],
+                camera_shapes=policy_cfg.get("camera_shapes", dataset_spec.get("camera_shapes", {})),
+                camera_aliases=eval_cfg.get("camera_aliases"),
+                state_dim=policy_cfg["state_dim"],
+            )
+        except Exception as exc:
+            last_error = exc
+            logger.warning("仿真评估不可用，准备回退到离线动作误差评估: %s", exc)
+            if mode == "sim":
+                raise
+
+    if mode in {"auto", "offline"}:
+        eval_repo_id = data_cfg.get("eval_repo_id", DEFAULT_EVAL_REPO_ID)
+        eval_split = data_cfg.get("eval_split", "train")
+        eval_envs = data_cfg.get("eval_envs")
+        eval_local_dir = data_cfg.get("eval_local_dir")
+        strict_eval_filter = data_cfg.get("strict_eval_env_filter", False)
+        eval_env_episode_map_path = data_cfg.get("eval_env_episode_map_path")
+
+        eval_dataset = load_calvin_dataset(
+            repo_id=eval_repo_id,
+            split=eval_split,
+            envs=eval_envs,
+            local_dir=eval_local_dir,
+            strict_env_filter=strict_eval_filter,
+            env_episode_map_path=eval_env_episode_map_path,
         )
-    except (ImportError, RuntimeError) as e:
-        logger.warning("CALVIN 仿真环境不可用 (%s)，返回占位结果。", e)
-        return {
-            "success_rate": 0.0,
-            "avg_steps": 0.0,
-            "note": "CALVIN 环境不可用 — 需要 Mujoco + CALVIN 仿真。",
-        }
+        eval_loader = torch.utils.data.DataLoader(
+            eval_dataset,
+            batch_size=eval_cfg.get("batch_size", 32),
+            shuffle=False,
+            num_workers=eval_cfg.get("num_workers", 0),
+            pin_memory=True,
+            drop_last=False,
+        )
+
+        eval_stats = get_dataset_stats(eval_dataset)
+        offline_preprocess = preprocess_batch
+        if offline_preprocess is None:
+            offline_preprocess = create_preprocessor(policy, eval_stats if eval_stats is not None else None)
+        return evaluate_policy_on_dataset(policy, eval_loader, offline_preprocess)
+
+    if last_error is not None:
+        raise last_error
+    raise ValueError(f"不支持的评估模式: {mode}")
 
 
 def main():
@@ -91,7 +200,6 @@ def main():
 
     results = {}
 
-    # 评估 Baseline
     baseline_ckpt = args.baseline_ckpt or config["model"]["baseline_checkpoint"]
     logger.info("评估 BASELINE — 环境 %s", eval_cfg["env_name"])
 
@@ -99,11 +207,25 @@ def main():
         logger.error("Baseline 检查点未找到: %s", baseline_ckpt)
         results["baseline"] = {"error": f"Checkpoint not found: {baseline_ckpt}"}
     else:
-        baseline_policy = load_policy(baseline_ckpt, config, device)
-        results["baseline"] = run_zero_shot_eval(baseline_policy, eval_cfg, device)
-        logger.info("Baseline 成功率: %.2f%%", results["baseline"].get("success_rate", 0) * 100)
+        baseline_policy, baseline_meta, baseline_policy_cfg, baseline_dataset_spec = load_policy(
+            baseline_ckpt,
+            config,
+            device,
+        )
+        baseline_preprocess = create_preprocessor(
+            baseline_policy,
+            baseline_meta.get("dataset_stats"),
+        )
+        results["baseline"] = run_zero_shot_eval(
+            baseline_policy,
+            config,
+            baseline_policy_cfg,
+            baseline_dataset_spec,
+            baseline_preprocess,
+            device,
+        )
+        logger.info("Baseline 结果: %s", results["baseline"])
 
-    # 评估 Joint
     joint_ckpt = args.joint_ckpt or config["model"]["joint_checkpoint"]
     logger.info("评估 JOINT — 环境 %s", eval_cfg["env_name"])
 
@@ -111,20 +233,34 @@ def main():
         logger.error("Joint 检查点未找到: %s", joint_ckpt)
         results["joint"] = {"error": f"Checkpoint not found: {joint_ckpt}"}
     else:
-        joint_policy = load_policy(joint_ckpt, config, device)
-        results["joint"] = run_zero_shot_eval(joint_policy, eval_cfg, device)
-        logger.info("Joint 成功率: %.2f%%", results["joint"].get("success_rate", 0) * 100)
+        joint_policy, joint_meta, joint_policy_cfg, joint_dataset_spec = load_policy(
+            joint_ckpt,
+            config,
+            device,
+        )
+        joint_preprocess = create_preprocessor(
+            joint_policy,
+            joint_meta.get("dataset_stats"),
+        )
+        results["joint"] = run_zero_shot_eval(
+            joint_policy,
+            config,
+            joint_policy_cfg,
+            joint_dataset_spec,
+            joint_preprocess,
+            device,
+        )
+        logger.info("Joint 结果: %s", results["joint"])
 
-    # 对比
     logger.info("=" * 50)
     logger.info("BASELINE vs JOINT 零样本对比")
     logger.info("=" * 50)
-    logger.info("Baseline — 成功率: %.2f%%", results["baseline"].get("success_rate", 0) * 100)
-    logger.info("Joint    — 成功率: %.2f%%", results["joint"].get("success_rate", 0) * 100)
+    logger.info("Baseline — %s", results["baseline"])
+    logger.info("Joint    — %s", results["joint"])
 
-    # 保存
     output = {
         "env": eval_cfg["env_name"],
+        "mode": eval_cfg.get("mode", "auto"),
         "num_episodes": eval_cfg["num_episodes"],
         "baseline": results["baseline"],
         "joint": results["joint"],
