@@ -143,21 +143,28 @@ def get_dataset_stats(dataset_or_repo=DEFAULT_TRAIN_REPO_ID, local_dir: Optional
 
 
 def infer_dataset_spec(dataset, preferred_camera_names: Optional[List[str]] = None) -> Dict[str, Any]:
-    """从 LeRobotDataset 样本中推断 ACT 需要的输入/输出特征。"""
+    """从数据集样本中推断 ACT 需要的输入/输出特征，兼容 LeRobot 和 CALVIN 原生格式。"""
     base_dataset = get_base_dataset(dataset)
     if len(base_dataset) == 0:
         raise ValueError("数据集为空，无法推断特征。")
 
     sample = base_dataset[0]
-
+    is_calvin = _is_calvin_format(sample)
     discovered_cameras = []
     camera_shapes = {}
-    for key, value in sample.items():
-        if not key.startswith("observation.images."):
-            continue
-        camera_name = key.split("observation.images.", 1)[1]
-        discovered_cameras.append(camera_name)
-        camera_shapes[camera_name] = _normalize_image_shape(_shape_from_value(value))
+
+    if is_calvin:
+        # CALVIN 原生格式: image, wrist_image
+        discovered_cameras = ["rgb_static", "rgb_gripper"]
+        camera_shapes["rgb_static"] = _normalize_image_shape(_shape_from_value(sample["image"]))
+        camera_shapes["rgb_gripper"] = _normalize_image_shape(_shape_from_value(sample["wrist_image"]))
+    else:
+        for key, value in sample.items():
+            if not key.startswith("observation.images."):
+                continue
+            camera_name = key.split("observation.images.", 1)[1]
+            discovered_cameras.append(camera_name)
+            camera_shapes[camera_name] = _normalize_image_shape(_shape_from_value(value))
 
     if preferred_camera_names:
         ordered_cameras = [cam for cam in preferred_camera_names if cam in camera_shapes]
@@ -167,18 +174,19 @@ def infer_dataset_spec(dataset, preferred_camera_names: Optional[List[str]] = No
         camera_names = discovered_cameras
 
     if not camera_names:
-        raise ValueError("数据集未暴露任何 observation.images.* 特征，无法构建视觉 ACT。")
+        raise ValueError("数据集未暴露任何图像特征，无法构建视觉 ACT。")
 
-    state_dim = _infer_vector_dim(sample.get("observation.state"))
-    action_dim = _infer_vector_dim(sample.get("action"))
+    state_dim = _infer_vector_dim(sample.get("observation.state", sample.get("state")))
+    action_dim = _infer_vector_dim(sample.get("action", sample.get("actions")))
     if state_dim is None or action_dim is None:
-        raise ValueError("无法从数据集样本中推断 observation.state/action 维度。")
+        raise ValueError("无法从数据集样本中推断 state/action 维度。")
 
     return {
         "camera_names": camera_names,
         "camera_shapes": camera_shapes,
         "state_dim": state_dim,
         "action_dim": action_dim,
+        "is_calvin_format": is_calvin,
     }
 
 
@@ -191,21 +199,59 @@ def get_base_dataset(dataset):
     return dataset
 
 
+def _is_calvin_format(sample: dict) -> bool:
+    """检测是否为 CALVIN 原生格式 (image/wrist_image/state/actions)。"""
+    has_calvin = {"image", "wrist_image", "state", "actions"}.issubset(sample.keys())
+    has_lerobot = any(k.startswith("observation.images.") for k in sample)
+    return has_calvin and not has_lerobot
+
+
+class _CalvinRemapper(torch.utils.data.Dataset):
+    """将 CALVIN 原生 key 映射为 LeRobot 标准 key 的透明包装器。"""
+
+    _KEY_MAP = {
+        "image": "observation.images.rgb_static",
+        "wrist_image": "observation.images.rgb_gripper",
+        "state": "observation.state",
+        "actions": "action",
+    }
+
+    def __init__(self, dataset):
+        self._dataset = dataset
+        # 代理底层数据集的常用属性
+        for attr in ("hf_dataset", "stats", "meta", "episodes", "num_episodes"):
+            if hasattr(dataset, attr):
+                setattr(self, attr, getattr(dataset, attr))
+
+    def __len__(self):
+        return len(self._dataset)
+
+    def __getitem__(self, idx):
+        sample = self._dataset[idx]
+        return {self._KEY_MAP.get(k, k): v for k, v in sample.items()}
+
+
 def _load_dataset(repo_id: str, split: str, local_dir: Optional[str]):
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+    def _maybe_wrap(ds):
+        if len(ds) > 0 and _is_calvin_format(ds[0]):
+            logger.info("检测到 CALVIN 原生格式，自动映射 key。")
+            return _CalvinRemapper(ds)
+        return ds
 
     # 若提供了 local_dir，优先从本地路径加载 (LeRobot 0.5+ 使用 root= 参数)
     if local_dir is not None:
         local_path = Path(local_dir)
         if local_path.exists():
             logger.info("从本地路径加载: %s (repo_id=%s)", local_path, repo_id)
-            return LeRobotDataset(repo_id, root=str(local_path))
+            return _maybe_wrap(LeRobotDataset(repo_id, root=str(local_path)))
 
     # 尝试 HuggingFace Hub (LeRobot 0.5+ 无 split 参数)
     try:
         dataset = LeRobotDataset(repo_id)
         logger.info("从 HuggingFace Hub 加载: %s", repo_id)
-        return dataset
+        return _maybe_wrap(dataset)
     except Exception as e:
         logger.warning("从 Hub 加载失败: %s", e)
 
