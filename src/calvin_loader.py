@@ -218,7 +218,6 @@ class _CalvinRemapper(torch.utils.data.Dataset):
 
     def __init__(self, dataset):
         self._dataset = dataset
-        # 代理底层数据集的常用属性
         for attr in ("hf_dataset", "stats", "meta", "episodes", "num_episodes"):
             if hasattr(dataset, attr):
                 setattr(self, attr, getattr(dataset, attr))
@@ -228,7 +227,7 @@ class _CalvinRemapper(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         sample = self._dataset[idx]
-        return {self._KEY_MAP.get(k, k): v for k, v in sample.items()}
+        return {self._KEY_MAP[k]: v for k, v in sample.items() if k in self._KEY_MAP}
 
 
 def _load_dataset(repo_id: str, split: str, local_dir: Optional[str]):
