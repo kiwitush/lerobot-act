@@ -23,6 +23,8 @@ def resolve_policy_config(policy_cfg: Dict[str, Any], dataset_spec: Optional[Dic
 
 def build_act_config(policy_cfg: Dict[str, Any], dataset_spec: Optional[Dict[str, Any]] = None):
     """根据配置字典构建 ACTConfig，train 和 eval 共用。"""
+    from lerobot.configs.policies import PolicyFeature
+    from lerobot.configs.types import FeatureType
     from lerobot.policies.act.configuration_act import ACTConfig
 
     resolved_cfg = resolve_policy_config(policy_cfg, dataset_spec)
@@ -30,22 +32,22 @@ def build_act_config(policy_cfg: Dict[str, Any], dataset_spec: Optional[Dict[str
     camera_shapes = resolved_cfg.get("camera_shapes", {})
 
     input_features = {
-        "observation.state": {
-            "shape": (resolved_cfg["state_dim"],),
-            "dtype": "float32",
-        },
+        "observation.state": PolicyFeature(
+            type=FeatureType.STATE,
+            shape=(resolved_cfg["state_dim"],),
+        ),
     }
     for cam in camera_names:
-        input_features[f"observation.images.{cam}"] = {
-            "shape": tuple(camera_shapes.get(cam, (3, 200, 200))),
-            "dtype": "image",
-        }
+        input_features[f"observation.images.{cam}"] = PolicyFeature(
+            type=FeatureType.VISUAL,
+            shape=tuple(camera_shapes.get(cam, (3, 200, 200))),
+        )
 
     output_features = {
-        "action": {
-            "shape": (resolved_cfg["action_dim"],),
-            "dtype": "float32",
-        },
+        "action": PolicyFeature(
+            type=FeatureType.ACTION,
+            shape=(resolved_cfg["action_dim"],),
+        ),
     }
 
     return ACTConfig(
