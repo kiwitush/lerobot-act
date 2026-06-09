@@ -1,40 +1,91 @@
-# LeRobot ACT + CALVIN Cross-Environment Generalization
+# OS / editor
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
 
 # Python
 __pycache__/
 *.py[cod]
-*.egg-info/
-dist/
-build/
+*.pyo
+*.pyd
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
 
-# Conda / Virtualenv
+# Virtual envs
 .venv/
 venv/
+env/
+ENV/
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
+# Build / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
 
 # Jupyter
 .ipynb_checkpoints/
 
-# Outputs (checkpoints are large, exclude from git)
-outputs/checkpoints/
-outputs/logs/
+# Logs / runtime
+*.log
+*.out
+*.err
 
-# Data (downloaded separately)
-data/calvin_raw/
-data/calvin_processed/
-
-# Environment secrets
-.env
+# Data / checkpoints / experiment outputs
+data/
+outputs/
 wandb/
-swanlab/
+swanlog/
 
-# macOS
-.DS_Store
+# Model artifacts
+*.pt
+*.pth
+*.ckpt
+*.safetensors
 
-# Windows
-Thumbs.db
+# Documents: do not version markdown / tex sources in this repo
+*.md
+*.tex
+
+# LaTeX intermediate / generated files
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.idx
+*.ilg
+*.ind
+*.lof
+*.log
+*.lot
+*.nav
+*.out
+*.pdf
+*.run.xml
+*.snm
+*.synctex.gz
+*.toc
+*.vrb
+
+# Archives / downloads
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar

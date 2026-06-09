@@ -8,8 +8,8 @@
 
 | 阶段 | 描述 | 训练数据 | 测试环境 |
 |---|---|---|---|
-| **基础策略训练 (Baseline)** | 单环境视觉-动作策略学习 | 环境 A | 环境 A (验证) |
-| **多环境联合训练 (Joint)** | 混合多环境数据的联合训练 | 环境 A + B + C | 环境 D (验证) |
+| **基础策略训练 (Baseline)** | 单环境视觉-动作策略学习 | 环境 B | 环境 B (验证) |
+| **多环境联合训练 (Joint)** | 混合多环境数据的联合训练 | 环境 A + B + C | 环境 A + B + C (验证) |
 | **零样本跨环境测试 (Zero-shot)** | 在未见环境中评估泛化能力 | — | 环境 D |
 
 ## 环境配置
@@ -38,7 +38,10 @@ pip install -r requirements.txt
 
 ## 数据准备
 
-本项目使用 HuggingFace Hub 上的 `lerobot/calvin` 数据集（LeRobot 格式，已对齐）。
+本项目默认使用 HuggingFace Hub 上的社区 LeRobot 格式 CALVIN 数据集：
+
+- `CollisionCode/calvin_abc_d_lerobot_v2.1`：训练用 A/B/C 数据
+- `CollisionCode/calvin_d_d_lerobot_v2.1`：未见环境 D 的离线评估数据
 
 ### 方式一：直接从 HuggingFace Hub 加载（推荐）
 
@@ -56,11 +59,9 @@ python scripts/train.py --config configs/act_baseline.yaml
 
 ```bash
 # 通过 huggingface-cli 下载
-huggingface-cli download lerobot/calvin --repo-type dataset --local-dir ./data/calvin_lerobot
+huggingface-cli download CollisionCode/calvin_abc_d_lerobot_v2.1 --repo-type dataset --local-dir ./data/calvin_lerobot
 
-# 训练时指定本地路径
-python scripts/train.py --config configs/act_baseline.yaml \
-    data.local_dir=./data/calvin_lerobot
+# 然后在 YAML 配置中把 data.local_dir 改为 ./data/calvin_lerobot
 ```
 
 ### 方式三：从 CALVIN 原始 .npz 转换
@@ -104,7 +105,7 @@ lerobot-act/
 
 ## 训练
 
-### 基础策略训练 (Baseline) — 单环境 A
+### 基础策略训练 (Baseline) — 单环境 B
 
 ```bash
 python scripts/train.py --config configs/act_baseline.yaml
@@ -118,19 +119,9 @@ python scripts/train.py --config configs/act_joint.yaml
 
 ### WandB / SwanLab 日志
 
-训练日志默认使用 WandB。切换为 SwanLab（国内用户推荐）:
+训练日志默认使用配置文件中的 backend。当前命令行入口不支持 Hydra 风格的 `key=value` 动态覆写；如需切换，请直接修改 YAML 配置。
 
-```bash
-python scripts/train.py --config configs/act_baseline.yaml \
-    experiment.backend=swanlab
-```
-
-禁用在线日志:
-
-```bash
-python scripts/train.py --config configs/act_baseline.yaml \
-    experiment.backend=none
-```
+例如，将 `configs/act_baseline.yaml` 中的 `experiment.backend` 改为 `swanlab` 或 `none`。
 
 ## 评估
 
@@ -193,7 +184,7 @@ python scripts/visualize.py \
 
 训练好的模型权重可通过以下链接下载：
 
-- **Baseline Model** (环境 A): [Google Drive / 百度网盘链接]
+- **Baseline Model** (环境 B): [Google Drive / 百度网盘链接]
 - **Joint Model** (环境 A+B+C): [Google Drive / 百度网盘链接]
 
 > 提取码（如有）将在实验报告中标注。
