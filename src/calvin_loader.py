@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+import numpy as np
 import torch
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,7 @@ def load_calvin_dataset(
     local_dir: Optional[Union[str, Dict[str, str]]] = None,
     strict_env_filter: bool = True,
     env_episode_map_path: Optional[str] = None,
+    chunk_size: int = 1,
 ):
     """加载 CALVIN 数据集。
 
@@ -40,7 +42,7 @@ def load_calvin_dataset(
             env_local_dir = None
             if isinstance(local_dir, dict):
                 env_local_dir = local_dir.get(env)
-            dataset = _load_dataset(repo_id[env], split, env_local_dir)
+            dataset = _load_dataset(repo_id[env], split, env_local_dir, chunk_size=chunk_size)
             datasets.append(dataset)
 
         if len(datasets) == 1:
@@ -49,7 +51,7 @@ def load_calvin_dataset(
         logger.info("按环境独立数据源加载: %s", envs)
         return torch.utils.data.ConcatDataset(datasets)
 
-    dataset = _load_dataset(repo_id, split, local_dir if isinstance(local_dir, str) else None)
+    dataset = _load_dataset(repo_id, split, local_dir if isinstance(local_dir, str) else None, chunk_size=chunk_size)
 
     if envs:
         dataset = _filter_by_env(
@@ -207,7 +209,7 @@ def _is_calvin_format(sample: dict) -> bool:
 
 
 class _CalvinRemapper(torch.utils.data.Dataset):
-    """将 CALVIN 原生 key 映射为 LeRobot 标准 key 的透明包装器。"""
+    """CALVIN key 映射 + 动作 chunk 组装。"""
 
     _KEY_MAP = {
         "image": "observation.images.rgb_static",
@@ -216,27 +218,62 @@ class _CalvinRemapper(torch.utils.data.Dataset):
         "actions": "action",
     }
 
-    def __init__(self, dataset):
+    def __init__(self, dataset, chunk_size: int = 100):
         self._dataset = dataset
+        self._chunk_size = max(chunk_size, 1)
+        self._ep_starts = None
+        self._ep_ends = None
+        self._ep_arr = None
+        if self._chunk_size > 1:
+            self._build_episode_index()
         for attr in ("hf_dataset", "stats", "meta", "episodes", "num_episodes"):
             if hasattr(dataset, attr):
                 setattr(self, attr, getattr(dataset, attr))
+
+    def _build_episode_index(self):
+        hf = self._dataset.hf_dataset
+        ep_arr = np.array(hf["episode_index"], dtype=np.int64)
+        diff = np.diff(ep_arr)
+        self._ep_starts = np.concatenate([[0], np.where(diff != 0)[0] + 1])
+        self._ep_ends = np.concatenate([self._ep_starts[1:], [len(ep_arr)]])
+        self._ep_arr = ep_arr
 
     def __len__(self):
         return len(self._dataset)
 
     def __getitem__(self, idx):
         sample = self._dataset[idx]
-        return {self._KEY_MAP[k]: v for k, v in sample.items() if k in self._KEY_MAP}
+        result = {self._KEY_MAP[k]: v for k, v in sample.items() if k in self._KEY_MAP}
+        if self._chunk_size > 1 and "action" in result:
+            result["action"] = self._build_chunk(idx)
+        elif "action" in result and result["action"].ndim == 1:
+            result["action"] = result["action"].unsqueeze(0)
+        return result
+
+    def _build_chunk(self, idx):
+        pos = int(np.searchsorted(self._ep_starts, idx, side="right")) - 1
+        ep_end = int(self._ep_ends[pos])
+        need = self._chunk_size
+        available = ep_end - idx
+        actual = min(need, available)
+
+        hf = self._dataset.hf_dataset
+        actions = []
+        for j in range(idx, idx + actual):
+            a = hf["actions"][j]
+            actions.append(torch.as_tensor(a))
+        while len(actions) < need:
+            actions.append(actions[-1].clone())
+        return torch.stack(actions, dim=0)
 
 
-def _load_dataset(repo_id: str, split: str, local_dir: Optional[str]):
+def _load_dataset(repo_id: str, split: str, local_dir: Optional[str], chunk_size: int = 1):
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
     def _maybe_wrap(ds):
         if len(ds) > 0 and _is_calvin_format(ds[0]):
-            logger.info("检测到 CALVIN 原生格式，自动映射 key。")
-            return _CalvinRemapper(ds)
+            logger.info("检测到 CALVIN 原生格式，自动映射 key (chunk_size=%d)。", chunk_size)
+            return _CalvinRemapper(ds, chunk_size=chunk_size)
         return ds
 
     # 若提供了 local_dir，优先从本地路径加载 (LeRobot 0.5+ 使用 root= 参数)

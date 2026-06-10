@@ -152,6 +152,7 @@ def run_zero_shot_eval(
             local_dir=eval_local_dir,
             strict_env_filter=strict_eval_filter,
             env_episode_map_path=eval_env_episode_map_path,
+            chunk_size=config.get("policy", {}).get("chunk_size", 1),
         )
         eval_loader = torch.utils.data.DataLoader(
             eval_dataset,

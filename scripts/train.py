@@ -302,6 +302,7 @@ def main():
     env_episode_map_path = data_cfg.get("env_episode_map_path")
     local_dir = data_cfg.get("local_dir")
     val_split_ratio = data_cfg.get("val_split_ratio", 0.0)
+    chunk_size = config["policy"].get("chunk_size", 1)
 
     logger.info("训练环境: %s", train_envs if train_envs else "全部")
     logger.info("验证环境: %s", val_envs if val_envs else "全部")
@@ -313,6 +314,7 @@ def main():
         local_dir=local_dir,
         strict_env_filter=strict_env_filter,
         env_episode_map_path=env_episode_map_path,
+        chunk_size=chunk_size,
     )
 
     # LeRobot 0.5+ 无 split 参数；若配置了 val_split_ratio 则手动划分
@@ -334,6 +336,7 @@ def main():
             local_dir=local_dir,
             strict_env_filter=strict_env_filter,
             env_episode_map_path=env_episode_map_path,
+            chunk_size=chunk_size,
         )
 
     dataset_spec = infer_dataset_spec(full_dataset, preferred_camera_names=config["policy"].get("camera_names"))
