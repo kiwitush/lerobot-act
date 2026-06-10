@@ -53,7 +53,7 @@ def compare_runs(
     baseline_metrics: Dict[str, List[float]],
     joint_metrics: Dict[str, List[float]],
 ) -> Dict[str, Dict]:
-    """对比 baseline 与 joint 训练指标，返回最优验证损失、收敛轮次和综合判断。"""
+    """对比 baseline 与 joint 训练指标，返回最优验证损失、收敛轮次和 delta 差值。"""
     result = {}
 
     for name, metrics in [("baseline", baseline_metrics), ("joint", joint_metrics)]:
@@ -72,13 +72,6 @@ def compare_runs(
         "best_val_loss": delta,
         "convergence_gap": result["baseline"]["convergence_epoch"] - result["joint"]["convergence_epoch"],
     }
-
-    if delta > 0.001:
-        result["verdict"] = "联合训练验证损失更优。"
-    elif delta < -0.001:
-        result["verdict"] = "基线训练验证损失更优。"
-    else:
-        result["verdict"] = "二者性能相当。"
 
     return result
 

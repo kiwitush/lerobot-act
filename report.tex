@@ -271,6 +271,9 @@ CALVIN 是一个用于长序列语言条件操作任务的基准\cite{mees2022ca
 每个环境包含 7-DoF Franka Emika Panda 机械臂和一个平行夹爪。
 每条演示包含两个 RGB 相机观测 ($200\times200$ px)、15 维机器人关节状态和 7 维动作标签。
 
+实验使用的数据集为 HuggingFace Hub 上的 \url{https://huggingface.co/datasets/xiaoma26/calvin-lerobot}，
+已按环境 A/B/C/D 预分片为 LeRobot 格式的子数据集。
+
 \subsubsection{数据分割}
 
 采用标准的 \texttt{task\_ABC\_D} 分割：

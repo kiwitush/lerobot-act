@@ -23,7 +23,7 @@ dependencies:
       # LeRobot 核心框架 (含 ACT 策略 + LeRobotDataset)
       - lerobot
 
-      # CALVIN 基准环境及其依赖 (仅评估时需要)
+      # CALVIN 基准环境及其依赖
       - "calvin @ git+https://github.com/mees/calvin.git@main"
       - gym==0.21.0
       - mujoco==2.3.0

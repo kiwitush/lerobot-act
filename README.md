@@ -38,10 +38,9 @@ pip install -r requirements.txt
 
 ## 数据准备
 
-本项目默认使用 HuggingFace Hub 上的社区 LeRobot 格式 CALVIN 数据集：
+本项目使用 HuggingFace Hub 上的 LeRobot 格式 CALVIN 数据集：
 
-- `CollisionCode/calvin_abc_d_lerobot_v2.1`：训练用 A/B/C 数据
-- `CollisionCode/calvin_d_d_lerobot_v2.1`：未见环境 D 的离线评估数据
+- [xiaoma26/calvin-lerobot](https://huggingface.co/datasets/xiaoma26/calvin-lerobot)：按环境 A/B/C/D 分片，直接对应训练和评估配置
 
 ### 方式一：直接从 HuggingFace Hub 加载（推荐）
 
@@ -59,14 +58,14 @@ python scripts/train.py --config configs/act_baseline.yaml
 
 ```bash
 # 通过 huggingface-cli 下载
-huggingface-cli download CollisionCode/calvin_abc_d_lerobot_v2.1 --repo-type dataset --local-dir ./data/calvin_lerobot
+huggingface-cli download xiaoma26/calvin-lerobot --repo-type dataset --local-dir ./data/calvin-lerobot
 
-# 然后在 YAML 配置中把 data.local_dir 改为 ./data/calvin_lerobot
+# 然后在 YAML 配置中把 data.local_dir 改为 ./data/calvin-lerobot
 ```
 
-### 方式三：从 CALVIN 原始 .npz 转换
+### 方式三：从 CALVIN 原始 .npz 转换（备用）
 
-若已有 CALVIN 原始数据，可使用转换脚本：
+若已下载 CALVIN 原始 \texttt{task\_ABC\_D} 格式数据，可使用转换脚本生成 LeRobot 格式：
 
 ```bash
 python scripts/prepare_data.py \
@@ -180,15 +179,6 @@ python scripts/visualize.py \
 | **Epochs** | 200 |
 | **Loss Function** | L1 Loss + KL Divergence (VAE) |
 
-## 模型权重
-
-训练好的模型权重可通过以下链接下载：
-
-- **Baseline Model** (环境 B): [Google Drive / 百度网盘链接]
-- **Joint Model** (环境 A+B+C): [Google Drive / 百度网盘链接]
-
-> 提取码（如有）将在实验报告中标注。
-
 ## 引用
 
 ```bibtex
@@ -214,7 +204,3 @@ python scripts/visualize.py \
   url={https://github.com/huggingface/lerobot}
 }
 ```
-
-## 许可证
-
-本项目仅用于学术研究目的。CALVIN 数据集和 LeRobot 框架分别遵循其各自的许可证。

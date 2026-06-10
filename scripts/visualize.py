@@ -55,7 +55,7 @@ def plot_training_curves(
     title: str = "ACT 训练曲线",
     smooth_window: int = 10,
 ):
-    """绘制 baseline vs. joint 训练曲线（四子图）。"""
+    """绘制 baseline vs. joint 训练曲线"""
     try:
         import matplotlib.pyplot as plt
     except ImportError:
@@ -185,6 +185,13 @@ def main():
         logger.info("评估结果文件未找到 (%s)，跳过评估图。", args.eval_results)
 
     logger.info("所有图表已保存至 %s", output_dir)
+
+    from src.utils.metrics import compare_runs
+
+    cmp = compare_runs(baseline_metrics, joint_metrics)
+    logger.info("Baseline best val loss: %.6f (epoch %d)", cmp["baseline"]["best_val_loss"], cmp["baseline"]["best_val_epoch"])
+    logger.info("Joint best val loss:    %.6f (epoch %d)", cmp["joint"]["best_val_loss"], cmp["joint"]["best_val_epoch"])
+    logger.info("Delta (baseline - joint): %.6f", cmp["delta"]["best_val_loss"])
 
 
 if __name__ == "__main__":
