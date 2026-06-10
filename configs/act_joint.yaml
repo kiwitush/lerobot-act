@@ -6,7 +6,7 @@ experiment:
   name: "act_joint"
   project: "lerobot-act"
   seed: 42
-  backend: "swanlab"             # "swanlab" (国内推荐) / "wandb" / "none"
+  backend: "swanlab"             # "swanlab" / "wandb" / "none"
   output_dir: "/root/autodl-tmp/lerobot-act-outputs"
 
 data:

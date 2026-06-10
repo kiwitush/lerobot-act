@@ -231,12 +231,30 @@ class _CalvinRemapper(torch.utils.data.Dataset):
                 setattr(self, attr, getattr(dataset, attr))
 
     def _build_episode_index(self):
-        hf = self._dataset.hf_dataset
-        ep_arr = np.array(hf["episode_index"], dtype=np.int64)
-        diff = np.diff(ep_arr)
-        self._ep_starts = np.concatenate([[0], np.where(diff != 0)[0] + 1])
-        self._ep_ends = np.concatenate([self._ep_starts[1:], [len(ep_arr)]])
-        self._ep_arr = ep_arr
+        # 从 episode 元数据快速计算边界，避免扫描全量 hf_dataset (会触发内存爆炸)
+        eps = self._dataset.meta.episodes
+        col_names = getattr(eps, "column_names", [])
+        if "length" in col_names:
+            lengths = np.array(eps["length"], dtype=np.int64)
+            self._ep_ends = np.cumsum(lengths)
+            self._ep_starts = np.concatenate([[0], self._ep_ends[:-1]])
+            self._num_eps = len(lengths)
+        else:
+            # 回退：ep -> frame 计数
+            ep_counts = {}
+            for item in eps:
+                ep = int(item.get("episode_index", item.get("index", item.get("episode_id", 0))))
+                length = int(item.get("length", item.get("num_frames", 0)))
+                ep_counts[ep] = length
+            sorted_eps = sorted(ep_counts.items())
+            lengths = np.array([l for _, l in sorted_eps], dtype=np.int64)
+            self._ep_ends = np.cumsum(lengths)
+            self._ep_starts = np.concatenate([[0], self._ep_ends[:-1]])
+            self._num_eps = len(lengths)
+
+    def _ep_for_idx(self, idx: int) -> int:
+        """返回给定 frame index 所属的 episode 边界位置索引。"""
+        return int(np.searchsorted(self._ep_ends, idx, side="right"))
 
     def __len__(self):
         return len(self._dataset)
@@ -251,17 +269,13 @@ class _CalvinRemapper(torch.utils.data.Dataset):
         return result
 
     def _build_chunk(self, idx):
-        pos = int(np.searchsorted(self._ep_starts, idx, side="right")) - 1
+        pos = self._ep_for_idx(idx)
         ep_end = int(self._ep_ends[pos])
         need = self._chunk_size
-        available = ep_end - idx
-        actual = min(need, available)
+        actual = min(need, ep_end - idx)
 
         hf = self._dataset.hf_dataset
-        actions = []
-        for j in range(idx, idx + actual):
-            a = hf["actions"][j]
-            actions.append(torch.as_tensor(a))
+        actions = [torch.as_tensor(a) for a in hf["actions"][idx:idx + actual]]
         while len(actions) < need:
             actions.append(actions[-1].clone())
         return torch.stack(actions, dim=0)
