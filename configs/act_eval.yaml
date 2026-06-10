@@ -3,7 +3,7 @@
 
 experiment:
   name: "act_zero_shot_eval"
-  output_dir: "./outputs"
+  output_dir: "/root/autodl-tmp/lerobot-act-outputs"
 
 model:
   baseline_checkpoint: "./outputs/checkpoints/act_baseline/best_model.pt"
