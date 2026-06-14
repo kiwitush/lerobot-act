@@ -11,3 +11,10 @@ swanlab
 jupyter
 ipykernel
 lerobot
+# CALVIN 仿真评估 (仅 eval.py Success Rate 模式需要)
+gym==0.21.0
+mujoco==2.3.0
+mujoco-py==2.1.2.14
+cython<3.0
+tensorboard
+calvin @ git+https://github.com/mees/calvin.git@main

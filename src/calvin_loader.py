@@ -12,8 +12,8 @@ import torch
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TRAIN_REPO_ID = "CollisionCode/calvin_abc_d_lerobot_v2.1"
-DEFAULT_EVAL_REPO_ID = "CollisionCode/calvin_d_d_lerobot_v2.1"
+DEFAULT_TRAIN_REPO_ID = "xiaoma26/calvin-lerobot"
+DEFAULT_EVAL_REPO_ID = "xiaoma26/calvin-lerobot"
 
 
 def load_calvin_dataset(
@@ -62,6 +62,7 @@ def load_calvin_dataset(
             local_dir=local_dir if isinstance(local_dir, str) else None,
             strict_env_filter=strict_env_filter,
             env_episode_map_path=env_episode_map_path,
+            chunk_size=chunk_size,
         )
 
     return dataset
@@ -231,16 +232,17 @@ class _CalvinRemapper(torch.utils.data.Dataset):
                 setattr(self, attr, getattr(dataset, attr))
 
     def _build_episode_index(self):
-        # 从 episode 元数据快速计算边界，避免扫描全量 hf_dataset (会触发内存爆炸)
+        logger.info("构建 episode 边界索引...")
         eps = self._dataset.meta.episodes
         col_names = getattr(eps, "column_names", [])
+        logger.info("episode 元数据列: %s, 记录数: %d", col_names, len(eps))
         if "length" in col_names:
             lengths = np.array(eps["length"], dtype=np.int64)
-            self._ep_ends = np.cumsum(lengths)
-            self._ep_starts = np.concatenate([[0], self._ep_ends[:-1]])
-            self._num_eps = len(lengths)
+        elif "index" in col_names:
+            starts = np.array(eps["index"], dtype=np.int64)
+            lengths = np.diff(starts, append=len(self._dataset))
         else:
-            # 回退：ep -> frame 计数
+            # 回退：逐条读取
             ep_counts = {}
             for item in eps:
                 ep = int(item.get("episode_index", item.get("index", item.get("episode_id", 0))))
@@ -248,9 +250,10 @@ class _CalvinRemapper(torch.utils.data.Dataset):
                 ep_counts[ep] = length
             sorted_eps = sorted(ep_counts.items())
             lengths = np.array([l for _, l in sorted_eps], dtype=np.int64)
-            self._ep_ends = np.cumsum(lengths)
-            self._ep_starts = np.concatenate([[0], self._ep_ends[:-1]])
-            self._num_eps = len(lengths)
+        self._ep_ends = np.cumsum(lengths)
+        self._ep_starts = np.concatenate([[0], self._ep_ends[:-1]])
+        self._num_eps = len(lengths)
+        logger.info("episode 索引构建完成: %d episodes, %d frames", self._num_eps, self._ep_ends[-1])
 
     def _ep_for_idx(self, idx: int) -> int:
         """返回给定 frame index 所属的 episode 边界位置索引。"""
@@ -281,26 +284,35 @@ class _CalvinRemapper(torch.utils.data.Dataset):
         return torch.stack(actions, dim=0)
 
 
+def _maybe_wrap(ds, chunk_size: int = 1):
+    if len(ds) > 0 and _is_calvin_format(ds[0]):
+        logger.info("检测到 CALVIN 原生格式，自动映射 key (chunk_size=%d)。", chunk_size)
+        return _CalvinRemapper(ds, chunk_size=chunk_size)
+    return ds
+
+
 def _load_dataset(repo_id: str, split: str, local_dir: Optional[str], chunk_size: int = 1):
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-    def _maybe_wrap(ds):
-        if len(ds) > 0 and _is_calvin_format(ds[0]):
-            logger.info("检测到 CALVIN 原生格式，自动映射 key (chunk_size=%d)。", chunk_size)
-            return _CalvinRemapper(ds, chunk_size=chunk_size)
-        return ds
-
-    # 若提供了 local_dir，优先从本地路径加载 (LeRobot 0.5+ 使用 root= 参数)
+    # 若提供了 local_dir，优先从本地路径加载
     if local_dir is not None:
         local_path = Path(local_dir)
         if local_path.exists():
-            logger.info("从本地路径加载: %s (repo_id=%s)", local_path, repo_id)
-            return _maybe_wrap(LeRobotDataset(repo_id, root=str(local_path)))
+            logger.info("从本地路径加载: %s (repo_id=%s, split=%s)", local_path, repo_id, split)
+            try:
+                return _maybe_wrap(LeRobotDataset(repo_id, root=str(local_path), split=split), chunk_size=chunk_size)
+            except TypeError:
+                return _maybe_wrap(LeRobotDataset(repo_id, root=str(local_path)), chunk_size=chunk_size)
 
-    # 尝试 HuggingFace Hub (LeRobot 0.5+ 无 split 参数)
+    # 尝试 HuggingFace Hub
     try:
+        dataset = LeRobotDataset(repo_id, split=split)
+        logger.info("从 HuggingFace Hub 加载: %s (split=%s)", repo_id, split)
+        return _maybe_wrap(dataset)
+    except TypeError:
+        # LeRobot 0.5+ 移除了 split 参数，回退到无 split 加载
         dataset = LeRobotDataset(repo_id)
-        logger.info("从 HuggingFace Hub 加载: %s", repo_id)
+        logger.info("从 HuggingFace Hub 加载: %s (split 参数不被支持，已忽略)", repo_id)
         return _maybe_wrap(dataset)
     except Exception as e:
         logger.warning("从 Hub 加载失败: %s", e)
@@ -319,6 +331,7 @@ def _filter_by_env(
     local_dir: Optional[str] = None,
     strict_env_filter: bool = True,
     env_episode_map_path: Optional[str] = None,
+    chunk_size: int = 1,
 ):
     """按 episode 环境标签筛选数据。筛选失败时默认直接报错。"""
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -357,11 +370,13 @@ def _filter_by_env(
         root_kwarg["root"] = str(Path(local_dir))
 
     try:
-        return LeRobotDataset(repo_id, episodes=matching_episodes, **root_kwarg)
+        filtered = LeRobotDataset(repo_id, episodes=matching_episodes, **root_kwarg)
+        return _maybe_wrap(filtered, chunk_size=chunk_size)
     except Exception:
         if local_dir is not None:
             logger.info("Hub 重建失败，回退到本地路径: %s", local_dir)
-            return LeRobotDataset(repo_id, root=str(Path(local_dir)), episodes=matching_episodes)
+            filtered = LeRobotDataset(repo_id, root=str(Path(local_dir)), episodes=matching_episodes)
+            return _maybe_wrap(filtered, chunk_size=chunk_size)
         raise
 
 

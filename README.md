@@ -63,15 +63,6 @@ huggingface-cli download xiaoma26/calvin-lerobot --repo-type dataset --local-dir
 # 然后在 YAML 配置中把 data.local_dir 改为 ./data/calvin-lerobot
 ```
 
-### 方式三：从 CALVIN 原始 .npz 转换（备用）
-
-若已下载 CALVIN 原始 \texttt{task\_ABC\_D} 格式数据，可使用转换脚本生成 LeRobot 格式：
-
-```bash
-python scripts/prepare_data.py \
-    --input ./data/calvin_raw/task_ABC_D \
-    --output ./data/calvin_lerobot
-```
 
 ## 项目结构
 
@@ -84,8 +75,7 @@ lerobot-act/
 ├── scripts/                     # 可执行脚本
 │   ├── train.py                 # 训练入口 (使用 LeRobot ACTPolicy)
 │   ├── eval.py                  # 零样本评估
-│   ├── visualize.py             # 结果可视化
-│   └── prepare_data.py          # CALVIN → LeRobot 格式转换 (可选)
+│   └── visualize.py             # 结果可视化
 ├── src/                         # 核心源码
 │   ├── calvin_loader.py         # CALVIN 数据加载 (封装 LeRobotDataset)
 │   ├── calvin_env.py            # CALVIN Gym 环境封装
