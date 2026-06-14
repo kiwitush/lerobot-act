@@ -266,9 +266,10 @@ class _CalvinRemapper(torch.utils.data.Dataset):
         sample = self._dataset[idx]
         result = {self._KEY_MAP[k]: v for k, v in sample.items() if k in self._KEY_MAP}
         if self._chunk_size > 1 and "action" in result:
-            result["action"] = self._build_chunk(idx)
+            result["action"], result["action_is_pad"] = self._build_chunk(idx)
         elif "action" in result and result["action"].ndim == 1:
             result["action"] = result["action"].unsqueeze(0)
+            result["action_is_pad"] = torch.zeros(1, dtype=torch.bool)
         return result
 
     def _build_chunk(self, idx):
@@ -279,9 +280,12 @@ class _CalvinRemapper(torch.utils.data.Dataset):
 
         hf = self._dataset.hf_dataset
         actions = [torch.as_tensor(a) for a in hf["actions"][idx:idx + actual]]
+        # action_is_pad: True 表示填充位，False 表示真实动作
+        is_pad = torch.zeros(need, dtype=torch.bool)
         while len(actions) < need:
             actions.append(actions[-1].clone())
-        return torch.stack(actions, dim=0)
+            is_pad[len(actions) - 1] = True
+        return torch.stack(actions, dim=0), is_pad
 
 
 def _maybe_wrap(ds, chunk_size: int = 1):
