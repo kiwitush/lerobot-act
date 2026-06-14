@@ -45,7 +45,7 @@ training:
   lr_backbone: 1.0e-5
   weight_decay: 1.0e-4
   grad_clip_norm: 1.0
-  num_workers: 4
+  num_workers: 0
   val_every: 5
   save_every: 20
   early_stop_patience: 30

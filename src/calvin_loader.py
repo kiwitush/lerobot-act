@@ -224,7 +224,7 @@ class _CalvinRemapper(torch.utils.data.Dataset):
         self._chunk_size = max(chunk_size, 1)
         self._ep_starts = None
         self._ep_ends = None
-        self._ep_arr = None
+        self._all_actions = None
         if self._chunk_size > 1:
             self._build_episode_index()
         for attr in ("hf_dataset", "stats", "meta", "episodes", "num_episodes"):
@@ -242,7 +242,6 @@ class _CalvinRemapper(torch.utils.data.Dataset):
             starts = np.array(eps["index"], dtype=np.int64)
             lengths = np.diff(starts, append=len(self._dataset))
         else:
-            # 回退：逐条读取
             ep_counts = {}
             for item in eps:
                 ep = int(item.get("episode_index", item.get("index", item.get("episode_id", 0))))
@@ -254,6 +253,16 @@ class _CalvinRemapper(torch.utils.data.Dataset):
         self._ep_starts = np.concatenate([[0], self._ep_ends[:-1]])
         self._num_eps = len(lengths)
         logger.info("episode 索引构建完成: %d episodes, %d frames", self._num_eps, self._ep_ends[-1])
+
+        # 预加载全部 actions 到内存，避免 hf_dataset 取 action 时触发图片解码
+        logger.info("预加载 actions (%.1f MB)...", self._ep_ends[-1] * 7 * 4 / 1024 / 1024)
+        hf = self._dataset.hf_dataset
+        try:
+            actions_view = hf.with_format("numpy", columns=["actions"])
+            self._all_actions = torch.from_numpy(actions_view[:]["actions"].astype(np.float32))
+        except Exception:
+            self._all_actions = torch.stack([torch.as_tensor(hf[i]["actions"]) for i in range(len(hf))], dim=0)
+        logger.info("actions 预加载完成: %s", self._all_actions.shape)
 
     def _ep_for_idx(self, idx: int) -> int:
         """返回给定 frame index 所属的 episode 边界位置索引。"""
@@ -278,14 +287,14 @@ class _CalvinRemapper(torch.utils.data.Dataset):
         need = self._chunk_size
         actual = min(need, ep_end - idx)
 
-        hf = self._dataset.hf_dataset
-        actions = [torch.as_tensor(a) for a in hf["actions"][idx:idx + actual]]
-        # action_is_pad: True 表示填充位，False 表示真实动作
+        # 直接从预加载的 actions 数组切片，避免触发 hf_dataset 的图片解码
+        chunk = self._all_actions[idx:idx + actual].clone()
         is_pad = torch.zeros(need, dtype=torch.bool)
-        while len(actions) < need:
-            actions.append(actions[-1].clone())
-            is_pad[len(actions) - 1] = True
-        return torch.stack(actions, dim=0), is_pad
+        if actual < need:
+            pad = chunk[-1].unsqueeze(0).expand(need - actual, -1)
+            chunk = torch.cat([chunk, pad], dim=0)
+            is_pad[actual:] = True
+        return chunk, is_pad
 
 
 def _maybe_wrap(ds, chunk_size: int = 1):
